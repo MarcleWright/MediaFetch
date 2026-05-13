@@ -1,0 +1,13 @@
+{
+  "name": "mediadownloader",
+  "version": "1.0.0",
+  "private": true,
+  "type": "module",
+  "scripts": {
+    "start": "node server.js"
+  },
+  "dependencies": {
+    "playwright": "^1.60.0",
+    "sharp": "^0.34.5"
+  }
+}

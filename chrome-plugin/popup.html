@@ -1,0 +1,46 @@
+<!doctype html>
+<html lang="en">
+<head>
+  <meta charset="utf-8" />
+  <meta name="viewport" content="width=device-width, initial-scale=1" />
+  <title>MediaFetch</title>
+  <link rel="stylesheet" href="popup.css" />
+</head>
+<body>
+  <main class="app">
+    <header class="hero">
+      <div class="heroTop">
+        <h1>MediaFetch</h1>
+        <span class="version">v0.1.4</span>
+      </div>
+      <p>Extract images from the current tab using your logged-in browser session.</p>
+    </header>
+
+    <section class="toolbar">
+      <button id="refreshBtn" type="button">Refresh</button>
+      <button id="selectAllBtn" type="button" disabled>Select All</button>
+      <button id="clearBtn" type="button" disabled>Clear</button>
+      <button id="selectOriginalBtn" type="button" disabled>Select Original</button>
+    </section>
+
+    <section class="folderBox">
+      <label for="folderName">Folder Name</label>
+      <input id="folderName" type="text" placeholder="ProjectsA" />
+      <div class="hint">Downloads will be saved under your default Chrome downloads folder in <code>Folder Name/</code>.</div>
+    </section>
+
+    <section class="summary">
+      <span id="selectionStatus">Selected: 0 / 0</span>
+      <button id="downloadBtn" type="button" disabled>Download</button>
+    </section>
+
+    <section id="status" class="status">Open a page and click Refresh.</section>
+    <section class="debugBox">
+      <div class="debugTitle">Debug</div>
+      <pre id="debugInfo" class="debugInfo">No debug data yet.</pre>
+    </section>
+    <section id="results" class="grid"></section>
+  </main>
+  <script src="popup.js"></script>
+</body>
+</html>
