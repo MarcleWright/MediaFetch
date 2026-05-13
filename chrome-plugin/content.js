@@ -1,14 +1,25 @@
 (() => {
-  const CONTENT_BUILD_HASH = "1012";
+  const CONTENT_BUILD_HASH = "1082";
+  let lastInstagramSamplingDebug = null;
+  let lastInstagramExternalSamplingDebug = null;
+  let lastInstagramOriginalMediaKeys = null;
 
   chrome.runtime.onMessage.addListener((message, _sender, sendResponse) => {
-    if (message?.type !== "mediafetch:extract") {
+    if (!["mediafetch:extract", "mediafetch:instagram-rendered-snapshot"].includes(message?.type)) {
       return;
     }
 
     (async () => {
       try {
-        const result = await extractImagesFromPage();
+        if (message?.type === "mediafetch:instagram-rendered-snapshot") {
+          sendResponse({
+            ok: true,
+            snapshot: collectInstagramRenderedSnapshot(),
+          });
+          return;
+        }
+
+        const result = await extractImagesFromPage(message?.maxIndexHint || 0, message?.sampledUrls || [], message?.sampledIndexes || []);
         sendResponse({
           ok: true,
           pageUrl: location.href,
@@ -27,23 +38,51 @@
     return true;
   });
 
-  async function extractImagesFromPage() {
+  async function extractImagesFromPage(maxIndexHint = 0, externalSampledUrls = [], externalSampledIndexes = []) {
     const items = [];
     const seen = new Set();
-    const domainOriginalUrls = await getDomainOriginalUrlSet();
+    const seenInstagramMediaItems = new Map();
+    const domainOriginalUrls = await getDomainOriginalUrlSet(maxIndexHint);
+    const externalUrls = Array.isArray(externalSampledUrls) ? externalSampledUrls : [];
+    externalUrls.forEach((url) => {
+      const normalized = normalizeUrl(url);
+      if (normalized) {
+        domainOriginalUrls?.add(normalized);
+      }
+    });
+    rebuildInstagramOriginalMediaKeys(domainOriginalUrls);
+    lastInstagramExternalSamplingDebug = /instagram\.com$/i.test(location.hostname) ? {
+      sampleIndexes: Array.isArray(externalSampledIndexes) ? externalSampledIndexes : [],
+      sampledUrlCount: externalUrls.length,
+      sampledMediaKeyCount: countInstagramMediaKeys(externalUrls),
+      sampledUrlPreview: externalUrls.slice(0, 6),
+    } : null;
 
     const push = (rawUrl, options = {}) => {
       const url = normalizeUrl(rawUrl);
       if (!url || seen.has(url)) return;
-      seen.add(url);
-
+      const instagramMediaKey = /instagram\.com$/i.test(location.hostname) ? getInstagramMediaKey(url) : "";
       const width = Number(options.width || 0);
       const height = Number(options.height || 0);
       const area = width * height;
       const sourceHint = options.sourceHint || "rendered";
       const score = computeScore(url, sourceHint, width, height);
+      if (instagramMediaKey) {
+        const existing = seenInstagramMediaItems.get(instagramMediaKey);
+        if (existing) {
+          if (isBetterInstagramMediaVariant({ url, score, area }, existing)) {
+            const index = items.indexOf(existing);
+            if (index >= 0) {
+              items.splice(index, 1);
+            }
+            seen.delete(existing.url);
+          } else {
+            return;
+          }
+        }
+      }
 
-      items.push({
+      const item = {
         url,
         thumbnail: url,
         format: inferFormat(url),
@@ -54,8 +93,21 @@
         area,
         score,
         sourceHint,
-      });
+      };
+      items.push(item);
+      seen.add(url);
+      if (instagramMediaKey) {
+        seenInstagramMediaItems.set(instagramMediaKey, item);
+      }
     };
+
+    if (/instagram\.com$/i.test(location.hostname) && domainOriginalUrls?.size) {
+      domainOriginalUrls.forEach((url) => {
+        push(url, {
+          sourceHint: "instagram-sampled",
+        });
+      });
+    }
 
     document.querySelectorAll("img").forEach((img) => {
       push(img.currentSrc || img.src, {
@@ -111,7 +163,7 @@
 
     return {
       images,
-      debug: await buildDebugInfo(images, domainOriginalUrls),
+      debug: await buildDebugInfo(images, domainOriginalUrls, maxIndexHint),
     };
   }
 
@@ -150,9 +202,10 @@
   function sanitizeFolderName(value) {
     return String(value || "")
       .replace(/[<>:"/\\|?*\x00-\x1F]/g, "_")
-      .replace(/\s+/g, " ")
+      .replace(/\s+/g, "_")
       .replace(/_+/g, "_")
       .replace(/\.+$/g, "")
+      .replace(/^_+|_+$/g, "")
       .trim()
       .slice(0, 64);
   }
@@ -162,20 +215,81 @@
       return "";
     }
 
-    const pathParts = location.pathname.split("/").filter(Boolean);
-    const userName = sanitizeFolderName(pathParts[0] || "");
-    const metaTitle = document.querySelector('meta[property="og:title"]')?.content || document.title || "";
-    const caption = sanitizeFolderName(cleanProjectTitle(metaTitle));
-
-    if (userName && caption && caption.toLowerCase() !== userName.toLowerCase()) {
-      return sanitizeFolderName(`${userName} - ${caption}`).slice(0, 64);
+    const userName = sanitizeFolderName(inferInstagramUserName());
+    const dateCode = inferInstagramPostDateCode();
+    if (userName && dateCode) {
+      return sanitizeFolderName(`${userName}_${dateCode}`);
     }
 
-    return userName || caption || "Instagram";
+    return userName || "Instagram";
+  }
+
+  function inferInstagramUserName() {
+    const pathParts = location.pathname.split("/").filter(Boolean);
+    if (pathParts.length >= 3 && /^(p|reel)$/i.test(pathParts[1])) {
+      return pathParts[0] || "";
+    }
+
+    const metaTitle = document.querySelector('meta[property="og:title"]')?.content || document.title || "";
+    const titleMatch = metaTitle.match(/^@?([A-Za-z0-9._]+)\s+(?:on|在)\s+Instagram/i);
+    if (titleMatch) {
+      return titleMatch[1];
+    }
+
+    const profileLink = document.querySelector('header a[href^="/"], main a[href^="/"]')?.getAttribute("href") || "";
+    const profileMatch = profileLink.match(/^\/([A-Za-z0-9._]+)\/?$/);
+    return profileMatch ? profileMatch[1] : "";
+  }
+
+  function inferInstagramPostDateCode() {
+    const candidates = [
+      ...Array.from(document.querySelectorAll("time[datetime]")).map((node) => node.getAttribute("datetime") || ""),
+      document.querySelector('meta[property="article:published_time"]')?.content || "",
+      document.querySelector('meta[name="date"]')?.content || "",
+    ];
+
+    const html = document.documentElement?.innerHTML || "";
+    const jsonTimeMatch = html.match(/"(?:taken_at_timestamp|date|created_at)"\s*:\s*(?:"([^"]+)"|(\d{10,13}))/i);
+    if (jsonTimeMatch) {
+      candidates.push(jsonTimeMatch[1] || jsonTimeMatch[2] || "");
+    }
+
+    for (const value of candidates) {
+      const dateCode = formatInstagramDateCode(value);
+      if (dateCode) {
+        return dateCode;
+      }
+    }
+
+    return "";
+  }
+
+  function formatInstagramDateCode(value) {
+    const raw = String(value || "").trim();
+    if (!raw) {
+      return "";
+    }
+
+    let date = null;
+    if (/^\d{10,13}$/.test(raw)) {
+      const numeric = Number(raw);
+      date = new Date(raw.length === 13 ? numeric : numeric * 1000);
+    } else {
+      date = new Date(raw);
+    }
+
+    if (!date || Number.isNaN(date.getTime())) {
+      return "";
+    }
+
+    const year = String(date.getFullYear()).slice(-2);
+    const month = String(date.getMonth() + 1).padStart(2, "0");
+    const day = String(date.getDate()).padStart(2, "0");
+    return `${year}${month}${day}`;
   }
 
   function normalizeUrl(rawUrl) {
-    const value = String(rawUrl || "").trim();
+    const value = String(rawUrl || "").trim().replace(/&amp;/g, "&");
     if (!value || value.startsWith("data:") || value.startsWith("blob:")) return "";
     try {
       return new URL(value, location.href).toString();
@@ -221,15 +335,47 @@
     if (/(thumb|thumbnail|small|preview|avatar|icon|sprite|crop|tiny|medium)/.test(lowered)) {
       score -= 140;
     }
+    if (isInstagramCroppedSquareUrl(url)) {
+      score -= 260;
+    }
 
     const area = (width || 0) * (height || 0);
     score += Math.min(500, Math.floor(area / 5000));
     return score;
   }
 
+  function isBetterInstagramMediaVariant(candidate, existing) {
+    const candidateCrop = isInstagramCroppedSquareUrl(candidate.url);
+    const existingCrop = isInstagramCroppedSquareUrl(existing.url);
+    if (candidateCrop !== existingCrop) {
+      return !candidateCrop;
+    }
+
+    if ((candidate.score || 0) !== (existing.score || 0)) {
+      return (candidate.score || 0) > (existing.score || 0);
+    }
+
+    return (candidate.area || 0) > (existing.area || 0);
+  }
+
+  function isInstagramCroppedSquareUrl(url) {
+    const raw = String(url || "").toLowerCase();
+    if (!/cdninstagram\.com|fbcdn\.net|\/scontent/i.test(raw)) {
+      return false;
+    }
+
+    try {
+      const parsed = new URL(normalizeUrl(url));
+      const stp = parsed.searchParams.get("stp") || "";
+      return /(?:^|_)c\d+\.\d+\.\d+\.\d+a(?:_|$)/i.test(stp) || /s640x640/i.test(stp);
+    } catch {
+      return /[?&]stp=[^&#]*(?:c\d+\.\d+\.\d+\.\d+a|s640x640)/i.test(raw);
+    }
+  }
+
   function detectOriginal(item, maxArea, domainOriginalUrls) {
     if (domainOriginalUrls) {
-      return domainOriginalUrls.has(item.url);
+      return domainOriginalUrls.has(item.url) || isInstagramOriginalMediaKey(item.url);
     }
 
     const area = item.area || 0;
@@ -244,9 +390,9 @@
     return areaRatio >= 0.85 || item.score >= 500;
   }
 
-  async function getDomainOriginalUrlSet() {
+  async function getDomainOriginalUrlSet(maxIndexHint = 0) {
     if (/instagram\.com$/i.test(location.hostname)) {
-      return await getInstagramOriginalUrlSet() || new Set();
+      return await getInstagramOriginalUrlSet(maxIndexHint) || new Set();
     }
 
     if (/behance\.net$/i.test(location.hostname)) {
@@ -256,7 +402,7 @@
     return null;
   }
 
-  async function getInstagramOriginalUrlSet() {
+  async function getInstagramOriginalUrlSet(maxIndexHint = 0) {
     if (!/instagram\.com$/i.test(location.hostname)) {
       return null;
     }
@@ -286,10 +432,32 @@
     const allowedLinkTypes = new Set(["none", "self-post", "other-link"]);
     const narrowed = firstCluster.filter((candidate) => allowedLinkTypes.has(candidate.linkType));
     const clusterCandidates = narrowed.length ? narrowed : firstCluster.slice(0, 10);
-    const finalCandidates = clusterCandidates;
-    const urls = createUrlSetFromCandidates(finalCandidates);
+    const clusterUrls = createUrlSetFromCandidates(clusterCandidates);
+    const carouselCount = await extractInstagramCarouselCount(article, maxIndexHint);
+    lastInstagramSamplingDebug = {
+      sampleIndexes: [],
+      sampledUrlCount: 0,
+      sampledUrlPreview: [],
+      usedSampledUrls: false,
+      carouselCount,
+      sampledMediaKeyCount: 0,
+    };
 
-    return urls.size ? urls : null;
+    const sampledUrls = carouselCount > 1 ? await fetchInstagramSampledUrls(carouselCount) : null;
+    if (sampledUrls?.size) {
+      sampledUrls.forEach((url) => clusterUrls.add(url));
+    }
+
+    lastInstagramSamplingDebug = {
+      sampleIndexes: carouselCount > 0 ? buildInstagramProbeIndexes(carouselCount) : [],
+      sampledUrlCount: sampledUrls ? sampledUrls.size : 0,
+      sampledMediaKeyCount: sampledUrls ? countInstagramMediaKeys(sampledUrls) : 0,
+      sampledUrlPreview: sampledUrls ? Array.from(sampledUrls).slice(0, 6) : [],
+      usedSampledUrls: !!sampledUrls?.size,
+      carouselCount,
+    };
+
+    return clusterUrls.size ? clusterUrls : null;
   }
 
   function getBehanceOriginalUrlSet() {
@@ -353,7 +521,7 @@
     return Math.max(0, Math.round(element.getBoundingClientRect().top + window.scrollY));
   }
 
-  async function extractInstagramCarouselCount(root) {
+  async function extractInstagramCarouselCount(root, maxIndexHint = 0) {
     const postCode = extractInstagramPostCode(location.pathname);
     if (!postCode) {
       return 0;
@@ -382,7 +550,8 @@
     }
 
     const htmlEvidenceMax = extractInstagramCarouselCountFromHtml(postCode);
-    return Math.max(maxIndex, htmlEvidenceMax);
+    maxIndex = Math.max(maxIndex, htmlEvidenceMax);
+    return Math.max(maxIndex, maxIndexHint > 0 ? maxIndexHint : 0);
   }
 
   function extractCurrentImgIndex() {
@@ -401,16 +570,17 @@
     return !!left && left === right;
   }
 
-  async function buildDebugInfo(images, domainOriginalUrls) {
+  async function buildDebugInfo(images, domainOriginalUrls, maxIndexHint = 0) {
     const originals = images.filter((item) => item.isOriginal).length;
     const instagramContainer = /instagram\.com$/i.test(location.hostname) ? findInstagramPostContainer() : null;
-    const instagramMaxImgIndex = instagramContainer ? await extractInstagramCarouselCount(instagramContainer) : 0;
+    const instagramMaxImgIndex = instagramContainer ? await extractInstagramCarouselCount(instagramContainer, maxIndexHint) : maxIndexHint;
     const debug = {
       domain: location.hostname,
       contentBuildHash: CONTENT_BUILD_HASH,
       imageCount: images.length,
       originalCount: originals,
       whitelistCount: domainOriginalUrls ? domainOriginalUrls.size : null,
+      whitelistMediaKeyCount: lastInstagramOriginalMediaKeys ? lastInstagramOriginalMediaKeys.size : null,
     };
 
     if (/instagram\.com$/i.test(location.hostname)) {
@@ -419,10 +589,13 @@
         normalizedPath: normalizeInstagramPostPath(location.pathname),
         currentImgIndex: extractCurrentImgIndex(),
         maxImgIndex: instagramMaxImgIndex,
+        maxIndexHint,
         articleFound: !!document.querySelector("main article"),
         articleTop: instagramContainer ? getContainerTop(instagramContainer) : null,
         containerFound: !!instagramContainer,
         containerTag: instagramContainer ? instagramContainer.tagName : null,
+        sampling: lastInstagramSamplingDebug,
+        externalSampling: lastInstagramExternalSamplingDebug,
       };
     }
 
@@ -557,6 +730,394 @@
 
   function escapeRegex(value) {
     return String(value || "").replace(/[.*+?^${}()|[\]\\]/g, "\\$&");
+  }
+
+  async function fetchInstagramSampledUrls(maxIndex) {
+    const samplePath = getInstagramCurrentPostPath(location.pathname);
+    if (!samplePath || !maxIndex) {
+      return null;
+    }
+
+    const probeIndexes = buildInstagramProbeIndexes(maxIndex);
+    const urls = new Set();
+
+    for (const index of probeIndexes) {
+      try {
+        const probeUrl = new URL(location.href);
+        probeUrl.pathname = samplePath;
+        probeUrl.search = "";
+        probeUrl.searchParams.set("img_index", String(index));
+
+        const response = await fetch(probeUrl.toString(), {
+          method: "GET",
+          credentials: "include",
+          redirect: "follow",
+        });
+
+        const html = await response.text();
+        collectInstagramUrlsFromHtml(html, urls, extractInstagramPostCode(samplePath));
+      } catch {
+        // Ignore per-probe failures and keep best-effort behavior.
+      }
+    }
+
+    return urls.size ? urls : null;
+  }
+
+  function buildInstagramProbeIndexes(maxIndex) {
+    if (maxIndex > 0 && maxIndex <= 4) {
+      return [maxIndex];
+    }
+
+    const indexes = new Set();
+    const groups = Math.floor(maxIndex / 4);
+
+    for (let n = 1; n <= groups; n += 1) {
+      const probe = 4 * n - 1;
+      if (probe >= 1 && probe <= maxIndex) {
+        indexes.add(probe);
+      }
+    }
+
+    indexes.add(maxIndex);
+
+    if (maxIndex >= 1 && indexes.size === 1) {
+      indexes.add(1);
+    }
+
+    return Array.from(indexes).sort((a, b) => a - b);
+  }
+
+  function getInstagramCurrentPostPath(value) {
+    const pathname = normalizePathname(value);
+    return /^\/(?:[A-Za-z0-9._-]+\/)?(?:p|reel)\/[^/]+$/i.test(pathname) ? pathname : "";
+  }
+
+  function collectInstagramUrlsFromHtml(html, urls, postCode = "") {
+    const safeHtml = String(html || "");
+    if (!safeHtml) {
+      return;
+    }
+
+    const foundScopedUrls = collectInstagramScopedUrlsFromHtml(safeHtml, urls, postCode);
+    if (foundScopedUrls) {
+      return;
+    }
+
+    const patterns = [
+      /"display_url"\s*:\s*"([^"]+)"/g,
+      /"image_url"\s*:\s*"([^"]+)"/g,
+      /<meta[^>]+property=["']og:image["'][^>]+content=["']([^"']+)["']/gi,
+      /"url"\s*:\s*"(https?:\\\/\\\/[^"]+scontent[^"]+)"/g,
+    ];
+
+    for (const pattern of patterns) {
+      let match;
+      while ((match = pattern.exec(safeHtml)) !== null) {
+        const decoded = decodeEscapedUrl(match[1]);
+        if (decoded) {
+          urls.add(decoded);
+        }
+      }
+    }
+  }
+
+  function collectInstagramScopedUrlsFromHtml(html, urls, postCode) {
+    if (!postCode) {
+      return false;
+    }
+
+    const beforeSize = urls.size;
+    const documentForScripts = new DOMParser().parseFromString(html, "text/html");
+    const scriptTexts = Array.from(documentForScripts.querySelectorAll("script"))
+      .map((node) => node.textContent || "")
+      .filter((text) => text.includes(postCode));
+
+    for (const text of scriptTexts) {
+      parseInstagramJsonFragments(text).forEach((value) => {
+        collectInstagramUrlsFromJson(value, urls, postCode);
+      });
+      collectInstagramUrlsNearPostCode(text, urls, postCode);
+    }
+
+    return urls.size > beforeSize;
+  }
+
+  function parseInstagramJsonFragments(text) {
+    const fragments = [];
+    const trimmed = String(text || "").trim();
+    if (!trimmed) {
+      return fragments;
+    }
+
+    const whole = tryParseJsonLike(trimmed);
+    if (whole) {
+      fragments.push(whole);
+    }
+
+    const assignmentPatterns = [
+      /window\.__additionalDataLoaded\s*\(\s*["'][^"']+["']\s*,\s*/g,
+      /window\.__sharedData\s*=\s*/g,
+    ];
+
+    for (const pattern of assignmentPatterns) {
+      let match;
+      while ((match = pattern.exec(trimmed)) !== null) {
+        const fragment = extractBalancedJson(trimmed, pattern.lastIndex);
+        const parsed = tryParseJsonLike(fragment);
+        if (parsed) {
+          fragments.push(parsed);
+        }
+      }
+    }
+
+    return fragments;
+  }
+
+  function tryParseJsonLike(value) {
+    const raw = String(value || "").trim().replace(/;$/, "");
+    if (!raw || !/^[{\[]/.test(raw)) {
+      return null;
+    }
+
+    try {
+      return JSON.parse(raw);
+    } catch {
+      return null;
+    }
+  }
+
+  function extractBalancedJson(text, startIndex) {
+    const start = text.slice(startIndex).search(/[{\[]/);
+    if (start < 0) {
+      return "";
+    }
+
+    const absoluteStart = startIndex + start;
+    const opener = text[absoluteStart];
+    const closer = opener === "{" ? "}" : "]";
+    let depth = 0;
+    let inString = false;
+    let escaped = false;
+
+    for (let i = absoluteStart; i < text.length; i += 1) {
+      const char = text[i];
+      if (inString) {
+        if (escaped) {
+          escaped = false;
+        } else if (char === "\\") {
+          escaped = true;
+        } else if (char === '"') {
+          inString = false;
+        }
+        continue;
+      }
+
+      if (char === '"') {
+        inString = true;
+      } else if (char === opener) {
+        depth += 1;
+      } else if (char === closer) {
+        depth -= 1;
+        if (depth === 0) {
+          return text.slice(absoluteStart, i + 1);
+        }
+      }
+    }
+
+    return "";
+  }
+
+  function collectInstagramUrlsFromJson(value, urls, postCode) {
+    walkInstagramJson(value, (node) => {
+      if (isInstagramCurrentPostNode(node, postCode)) {
+        appendInstagramMediaNodeUrls(node, urls);
+      }
+    });
+  }
+
+  function walkInstagramJson(value, visit) {
+    if (!value || typeof value !== "object") {
+      return;
+    }
+
+    visit(value);
+    if (Array.isArray(value)) {
+      value.forEach((item) => walkInstagramJson(item, visit));
+      return;
+    }
+
+    Object.values(value).forEach((item) => walkInstagramJson(item, visit));
+  }
+
+  function isInstagramCurrentPostNode(node, postCode) {
+    if (!node || typeof node !== "object" || Array.isArray(node)) {
+      return false;
+    }
+
+    const shortcode = String(node.shortcode || node.code || node.shortcode_media?.shortcode || "");
+    if (shortcode === postCode) {
+      return true;
+    }
+
+    const permalink = String(node.permalink || node.url || node.share_url || "");
+    return permalink ? extractInstagramPostCode(permalink) === postCode : false;
+  }
+
+  function appendInstagramMediaNodeUrls(node, urls) {
+    if (!node || typeof node !== "object") {
+      return;
+    }
+
+    appendInstagramUrlFields(node, urls);
+
+    const mediaLists = [
+      node.carousel_media,
+      node.edge_sidecar_to_children?.edges?.map((edge) => edge?.node),
+      node.items,
+      node.clips_metadata?.achievements_info?.media,
+    ].filter(Boolean);
+
+    mediaLists.flat().forEach((item) => {
+      appendInstagramUrlFields(item?.node || item, urls);
+    });
+  }
+
+  function appendInstagramUrlFields(node, urls) {
+    if (!node || typeof node !== "object") {
+      return;
+    }
+
+    [
+      node.display_url,
+      node.image_url,
+      node.thumbnail_url,
+      node.url,
+    ].forEach((url) => addInstagramMediaUrl(urls, url));
+
+    [
+      node.image_versions2?.candidates,
+      node.image_versions?.candidates,
+      node.display_resources,
+      node.thumbnail_resources,
+    ].filter(Boolean).flat().forEach((candidate) => {
+      addInstagramMediaUrl(urls, candidate?.url || candidate?.src);
+    });
+  }
+
+  function collectInstagramUrlsNearPostCode(text, urls, postCode) {
+    const escapedPostCode = escapeRegex(postCode);
+    const scopedPattern = new RegExp(`${escapedPostCode}[\\s\\S]{0,20000}`, "g");
+    let match;
+    while ((match = scopedPattern.exec(text)) !== null) {
+      const chunk = match[0];
+      [
+        /"display_url"\s*:\s*"([^"]+)"/g,
+        /"image_url"\s*:\s*"([^"]+)"/g,
+        /"url"\s*:\s*"(https?:\\\/\\\/[^"]+scontent[^"]+)"/g,
+      ].forEach((pattern) => {
+        let urlMatch;
+        while ((urlMatch = pattern.exec(chunk)) !== null) {
+          addInstagramMediaUrl(urls, urlMatch[1]);
+        }
+      });
+    }
+  }
+
+  function addInstagramMediaUrl(urls, value) {
+    const decoded = decodeEscapedUrl(value);
+    if (decoded && /\/(?:scontent|instagram)\b|fbcdn\.net|cdninstagram\.com/i.test(decoded)) {
+      urls.add(decoded);
+    }
+  }
+
+  function rebuildInstagramOriginalMediaKeys(urls) {
+    if (!/instagram\.com$/i.test(location.hostname)) {
+      lastInstagramOriginalMediaKeys = null;
+      return;
+    }
+
+    const keys = new Set();
+    if (urls) {
+      urls.forEach((url) => {
+        const key = getInstagramMediaKey(url);
+        if (key) {
+          keys.add(key);
+        }
+      });
+    }
+    lastInstagramOriginalMediaKeys = keys;
+  }
+
+  function isInstagramOriginalMediaKey(url) {
+    if (!lastInstagramOriginalMediaKeys?.size) {
+      return false;
+    }
+
+    const key = getInstagramMediaKey(url);
+    return !!key && lastInstagramOriginalMediaKeys.has(key);
+  }
+
+  function countInstagramMediaKeys(urls) {
+    const keys = new Set();
+    Array.from(urls || []).forEach((url) => {
+      const key = getInstagramMediaKey(url);
+      if (key) {
+        keys.add(key);
+      }
+    });
+    return keys.size;
+  }
+
+  function getInstagramMediaKey(rawUrl) {
+    const url = normalizeUrl(rawUrl);
+    if (!url) {
+      return "";
+    }
+
+    try {
+      const parsed = new URL(url);
+      const filename = decodeURIComponent(parsed.pathname.split("/").filter(Boolean).pop() || "");
+      if (filename && /\.(?:jpe?g|webp|png)$/i.test(filename)) {
+        return `file:${filename}`;
+      }
+
+      const cacheKey = parsed.searchParams.get("ig_cache_key");
+      if (cacheKey) {
+        return `ig:${cacheKey}`;
+      }
+
+      return parsed.pathname ? `path:${parsed.hostname}${parsed.pathname}` : "";
+    } catch {
+      return "";
+    }
+  }
+
+  function collectInstagramRenderedSnapshot() {
+    const container = findInstagramPostContainer();
+    const urls = new Set();
+    if (container) {
+      const candidateImages = collectVisualCandidates(container, {
+        minArea: 50000,
+        isAllowed: (img, candidate) =>
+          !isInsideForeignPostLink(img) &&
+          !isInsideProfileLink(img) &&
+          candidate.top <= getContainerTop(container) + 1800,
+      });
+
+      const firstCluster = takeLeadingCluster(candidateImages, 900);
+      const allowedLinkTypes = new Set(["none", "self-post", "other-link"]);
+      const narrowed = firstCluster.filter((candidate) => allowedLinkTypes.has(candidate.linkType));
+      createUrlSetFromCandidates(narrowed.length ? narrowed : firstCluster.slice(0, 10)).forEach((url) => urls.add(url));
+    }
+
+    return {
+      postCode: extractInstagramPostCode(location.pathname),
+      normalizedPath: normalizeInstagramPostPath(location.pathname),
+      currentImgIndex: extractCurrentImgIndex(),
+      containerFound: !!container,
+      urls: Array.from(urls),
+    };
   }
 
   function decodeEscapedUrl(value) {
