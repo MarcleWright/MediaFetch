@@ -1,4 +1,6 @@
 (() => {
+  const CONTENT_BUILD_HASH = "1012";
+
   chrome.runtime.onMessage.addListener((message, _sender, sendResponse) => {
     if (message?.type !== "mediafetch:extract") {
       return;
@@ -284,17 +286,7 @@
     const allowedLinkTypes = new Set(["none", "self-post", "other-link"]);
     const narrowed = firstCluster.filter((candidate) => allowedLinkTypes.has(candidate.linkType));
     const clusterCandidates = narrowed.length ? narrowed : firstCluster.slice(0, 10);
-    const carouselCount = await extractInstagramCarouselCount(article);
-    const fetchedCarouselUrls = carouselCount > 0 ? await fetchInstagramCarouselOriginalUrls(carouselCount) : null;
-    if (fetchedCarouselUrls && fetchedCarouselUrls.size) {
-      return fetchedCarouselUrls;
-    }
-
-    const extendedCandidates = candidateImages.filter((candidate) => allowedLinkTypes.has(candidate.linkType));
-    const fallbackExtendedCandidates = extendedCandidates.length ? extendedCandidates : candidateImages;
-    const finalCandidates = carouselCount > 0
-      ? fallbackExtendedCandidates.slice(0, carouselCount)
-      : clusterCandidates;
+    const finalCandidates = clusterCandidates;
     const urls = createUrlSetFromCandidates(finalCandidates);
 
     return urls.size ? urls : null;
@@ -390,15 +382,7 @@
     }
 
     const htmlEvidenceMax = extractInstagramCarouselCountFromHtml(postCode);
-    maxIndex = Math.max(maxIndex, htmlEvidenceMax);
-    if (maxIndex > 0) {
-      return maxIndex;
-    }
-
-    const redirectEvidenceMax = await probeInstagramMaxImgIndexByRedirect();
-    maxIndex = Math.max(maxIndex, redirectEvidenceMax);
-
-    return maxIndex;
+    return Math.max(maxIndex, htmlEvidenceMax);
   }
 
   function extractCurrentImgIndex() {
@@ -423,6 +407,7 @@
     const instagramMaxImgIndex = instagramContainer ? await extractInstagramCarouselCount(instagramContainer) : 0;
     const debug = {
       domain: location.hostname,
+      contentBuildHash: CONTENT_BUILD_HASH,
       imageCount: images.length,
       originalCount: originals,
       whitelistCount: domainOriginalUrls ? domainOriginalUrls.size : null,
@@ -572,104 +557,6 @@
 
   function escapeRegex(value) {
     return String(value || "").replace(/[.*+?^${}()|[\]\\]/g, "\\$&");
-  }
-
-  async function probeInstagramMaxImgIndexByRedirect() {
-    if (!/instagram\.com$/i.test(location.hostname)) {
-      return 0;
-    }
-
-    const postCode = extractInstagramPostCode(location.pathname);
-    if (!postCode) {
-      return 0;
-    }
-
-    try {
-      const probeUrl = new URL(location.href);
-      probeUrl.pathname = normalizeInstagramPostPath(location.pathname);
-      probeUrl.searchParams.set("img_index", "999");
-
-      const response = await fetch(probeUrl.toString(), {
-        method: "GET",
-        credentials: "include",
-        redirect: "follow",
-      });
-
-      const finalUrl = new URL(response.url);
-      if (!sameInstagramPostPath(finalUrl.pathname)) {
-        return 0;
-      }
-
-      const value = Number.parseInt(finalUrl.searchParams.get("img_index") || "", 10);
-      return Number.isFinite(value) && value > 0 ? value : 0;
-    } catch {
-      return 0;
-    }
-  }
-
-  async function fetchInstagramCarouselOriginalUrls(maxIndex) {
-    const normalizedPath = normalizeInstagramPostPath(location.pathname);
-    if (!normalizedPath || !maxIndex) {
-      return null;
-    }
-
-    const urls = new Set();
-    for (let index = 1; index <= maxIndex; index += 1) {
-      try {
-        const probeUrl = new URL(location.href);
-        probeUrl.pathname = normalizedPath;
-        probeUrl.search = "";
-        probeUrl.searchParams.set("img_index", String(index));
-
-        const response = await fetch(probeUrl.toString(), {
-          method: "GET",
-          credentials: "include",
-          redirect: "follow",
-        });
-
-        const html = await response.text();
-        const extractedUrl = extractInstagramPrimaryImageFromHtml(html, normalizedPath, index);
-        if (extractedUrl) {
-          urls.add(extractedUrl);
-        }
-      } catch {
-        // Ignore per-index fetch failures and keep best-effort behavior.
-      }
-    }
-
-    return urls.size ? urls : null;
-  }
-
-  function extractInstagramPrimaryImageFromHtml(html, normalizedPath, index) {
-    const safeHtml = String(html || "");
-    if (!safeHtml) {
-      return "";
-    }
-
-    const patterns = [
-      /<meta[^>]+property=["']og:image["'][^>]+content=["']([^"']+)["']/i,
-      /<meta[^>]+content=["']([^"']+)["'][^>]+property=["']og:image["']/i,
-      /"display_url":"([^"]+)"/i,
-      /"image_versions2"[^}]*"candidates":\[\{"url":"([^"]+)"/i,
-    ];
-
-    for (const pattern of patterns) {
-      const match = safeHtml.match(pattern);
-      if (match?.[1]) {
-        const normalized = decodeEscapedUrl(match[1]);
-        if (normalized) {
-          return normalized;
-        }
-      }
-    }
-
-    const indexPattern = new RegExp(`${escapeRegex(normalizedPath)}[^"'<>{}]{0,200}?img_index=${index}[^"'<>{}]{0,200}?(https?:\\\\?/\\\\?/[^"']+)`, "i");
-    const indexMatch = safeHtml.match(indexPattern);
-    if (indexMatch?.[1]) {
-      return decodeEscapedUrl(indexMatch[1]);
-    }
-
-    return "";
   }
 
   function decodeEscapedUrl(value) {

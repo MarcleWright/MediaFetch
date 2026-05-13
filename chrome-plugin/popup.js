@@ -13,6 +13,7 @@ const folderNameInput = document.getElementById("folderName");
 const selectionStatus = document.getElementById("selectionStatus");
 const statusEl = document.getElementById("status");
 const debugInfoEl = document.getElementById("debugInfo");
+const copyDebugBtn = document.getElementById("copyDebugBtn");
 const resultsEl = document.getElementById("results");
 
 folderNameInput.addEventListener("input", () => {
@@ -39,6 +40,7 @@ selectOriginalBtn.addEventListener("click", () => {
   render();
 });
 downloadBtn.addEventListener("click", downloadSelected);
+copyDebugBtn.addEventListener("click", copyDebugInfo);
 
 extractFromCurrentTab();
 
@@ -208,6 +210,18 @@ function renderDebugInfo(debug) {
   }
 
   debugInfoEl.textContent = JSON.stringify(debug, null, 2);
+}
+
+async function copyDebugInfo() {
+  const text = debugInfoEl.textContent || "";
+  if (!text.trim()) return;
+
+  try {
+    await navigator.clipboard.writeText(text);
+    setStatus("Debug copied.");
+  } catch (error) {
+    setStatus(`Copy failed: ${error instanceof Error ? error.message : String(error)}`, true);
+  }
 }
 
 function sanitizeFolderName(value) {

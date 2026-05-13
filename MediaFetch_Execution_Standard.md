@@ -333,11 +333,28 @@ Current debug samples already observed:
   - `maxImgIndex: 3`
   - this behavior was identified as incorrect for the same reason
 
+Additional Instagram observation from later testing:
+
+- for multi-image posts, the currently exposed media window is bounded and does not reveal the full carousel at once
+- observed rule:
+  - `index=1` tends to expose `1, 2`
+  - `index=2` tends to expose `1, 2, 3`
+  - middle indexes tend to expose a four-item window around the current index
+  - `index=max` tends to expose `max-2, max-1, max`
+- practical working window described by testing:
+  - around current index `N`, the visible set is commonly `N-2, N-1, N, N+1`
+  - the visible count does not exceed `4`
+- because of this, `Original` extraction should not depend on a single current page state
+- once `maxImgIndex` is known, a lightweight probe strategy can sample indexes with step `3`
+  - recommended probe sequence example: `1, 2, 5, 8, ..., max`
+  - merge URLs from those sampled pages to reconstruct the full carousel with fewer requests than probing every index
+
 Implementation requirement from these findings:
 
 - normalize Instagram identity by `postCode`
 - keep debug output for `postCode`, `currentImgIndex`, `maxImgIndex`, `containerFound`, and `containerTag`
 - never let `img_index` alone drive `Original` quantity
+- prefer bounded window-based reconstruction over full `1..N` brute-force probing
 
 ### Weibo
 

@@ -131,10 +131,24 @@ button:disabled {
   background: var(--panel);
 }
 
-.debugTitle {
+.debugHeader {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 12px;
   margin-bottom: 8px;
+}
+
+.debugTitle {
   font-size: 13px;
   font-weight: 700;
+}
+
+.secondaryBtn {
+  min-height: 30px;
+  padding: 0 10px;
+  background: #eef3fb;
+  color: var(--accent);
 }
 
 .debugInfo {
