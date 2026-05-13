@@ -346,8 +346,27 @@ Additional Instagram observation from later testing:
   - the visible count does not exceed `4`
 - because of this, `Original` extraction should not depend on a single current page state
 - once `maxImgIndex` is known, a lightweight probe strategy can sample indexes with step `3`
-  - recommended probe sequence example: `1, 2, 5, 8, ..., max`
-  - merge URLs from those sampled pages to reconstruct the full carousel with fewer requests than probing every index
+- recommended probe sequence example: `1, 2, 5, 8, ..., max`
+- merge URLs from those sampled pages to reconstruct the full carousel with fewer requests than probing every index
+
+Refined sampling rule from later analysis:
+
+- let `M = maxImgIndex`
+- let `N = floor(M / 4)`
+- let `L = M mod 4`
+- because one sampled page usually exposes a four-item window around the current index
+  - approximately `index-2, index-1, index, index+1`
+- the preferred probe set is:
+  - `S = { 4n - 1 | n = 1..N } union { M }`
+- example probes:
+  - `3, 7, 11, ..., M`
+- interpretation:
+  - probe `3` tends to cover `1..4`
+  - probe `7` tends to cover `5..8`
+  - probe `11` tends to cover `9..12`
+  - final probe `M` covers the tail section for remainders `L = 1, 2, 3`
+- after probing, merge and deduplicate URLs
+- if the first block appears incomplete on a given post, probing `1` or `2` may be used as a bounded fallback
 
 Implementation requirement from these findings:
 
@@ -355,6 +374,70 @@ Implementation requirement from these findings:
 - keep debug output for `postCode`, `currentImgIndex`, `maxImgIndex`, `containerFound`, and `containerTag`
 - never let `img_index` alone drive `Original` quantity
 - prefer bounded window-based reconstruction over full `1..N` brute-force probing
+- when using bounded reconstruction, prefer the formula-driven probe set `4n-1` plus `maxImgIndex`
+
+#### Instagram Rendered Sampling Findings
+
+Later testing refined the carousel strategy:
+
+1. `fetch(probeUrl).text()` is not reliable for Instagram post media extraction.
+2. Even when the sampled index formula is correct, the returned HTML may not contain usable hydration JSON for the current post.
+3. Direct page HTML parsing can return `sampledUrlCount: 0` while real browser navigation exposes the expected carousel window.
+4. The extension should therefore treat `fetch`-based HTML parsing as a fallback only.
+
+Preferred Chrome-plugin strategy:
+
+1. Use the user's logged-in active tab.
+2. Use popup-level real tab navigation to probe `maxImgIndex` when needed.
+3. Navigate the active tab to selected `img_index` values.
+4. Wait for the page to complete and render.
+5. Ask the content script for a rendered snapshot of the current post media window.
+6. Merge rendered snapshot URLs into the current post media set.
+7. Restore the tab to the original URL.
+
+Important implementation constraints:
+
+- Preserve the username path form during real navigation.
+  - `/username/p/postCode?img_index=N` must not be rewritten to `/p/postCode?img_index=N` during sampling.
+- Normalize identity by `postCode`, but preserve the navigable URL path for real tab navigation.
+- DOM/rendered sampling results must be merged with the current DOM candidate set.
+- Sampled URLs must never replace the current DOM candidate set wholesale.
+- If `maxIndexHint` is unavailable and page evidence only shows `carouselCount <= 1`, avoid letting a single sampled crop URL collapse the original candidate set.
+- `maxIndexHint > 0` is stronger evidence than DOM window hints.
+- DOM/HTML evidence such as `maxImgIndex = 4` without a successful popup probe may only mean the current window exposes index `4`; it is not proof of total carousel length.
+
+Current practical sampling rule:
+
+- if `M <= 4`, use `[M]`
+- if `M > 4`, use `[3, 7, 11, ..., M]`
+- for a 3-image carousel, sampling `index=3` is usually enough because the rendered window exposes `1, 2, 3`
+- for larger carousels, sample each four-item block and always include `M`
+
+Instagram media deduplication rules:
+
+- Full signed URLs are not stable identities.
+- Instagram may emit the same image with different `_nc_gid`, `oh`, and other transient query parameters.
+- Debug should distinguish:
+  - raw sampled URL count
+  - deduplicated media-key count
+- Media key priority:
+  1. stable image filename in URL pathname
+  2. `ig_cache_key`
+  3. host + pathname
+- For the same media key, prefer non-cropped variants over obvious square crop variants.
+- Crop indicators include `stp` values such as `c288.0.864.864a` and `s640x640`.
+- A crop variant should only be kept when no non-crop variant is available for that media key.
+
+Instagram folder naming:
+
+- Chrome-plugin Instagram folder names should be `username_yymmdd`.
+- Date should be the post date, not the current date.
+- Date sources, in priority order:
+  1. `time[datetime]`
+  2. `article:published_time`
+  3. `meta[name="date"]`
+  4. page JSON fields such as `taken_at_timestamp`, `date`, or `created_at`
+- If the post date is unavailable, fall back to `username`.
 
 ### Weibo
 
@@ -481,6 +564,36 @@ Downloaded files should be placed under:
 - show explicit error feedback on failure
 - avoid silent failure
 - keep folder creation implicit through download path
+
+### Chrome Extension Folder Creation
+
+Chrome extensions cannot directly create arbitrary folders with a mkdir API.
+
+The reliable pattern, confirmed by inspecting the Imageye extension (`agionbommeaifngbhincahgmoflcikhm`), is:
+
+1. Configure the target folder name before starting downloads.
+2. Start downloads with a simple file name such as `001.jpg`.
+3. Use a background service worker with `chrome.downloads.onDeterminingFilename`.
+4. In `onDeterminingFilename`, call `suggest({ filename: "folderName/001.jpg" })`.
+
+This pattern is preferable to trying to create a marker file or passing nested paths directly from the popup for every download.
+
+Implementation notes:
+
+- Keep folder name and file name sanitization separate.
+- Folder names should replace illegal characters with `_`.
+- File names should also replace illegal characters with `_`.
+- The popup may persist a manually edited folder name in `chrome.storage.local`.
+- Once a user manually edits the folder name, auto-detected names must not overwrite it.
+- The popup should send the sanitized target folder to the background service worker before starting downloads.
+- The popup should start each download with the plain sequential file name, for example `001.jpg`.
+- The background service worker should synchronously call `suggest()` in `onDeterminingFilename`.
+- If the background service worker is unavailable, the popup may fall back to direct nested filenames such as `folderName/001.jpg` instead of failing the whole download.
+- Do not rely on a marker file to create the folder.
+- Adding or changing a background service worker in `manifest.json` requires reloading the unpacked extension from `chrome://extensions`.
+- If folder creation still appears to fail, check Chrome's download setting:
+  - `Ask where to save each file before downloading` should be disabled.
+- This setting is also called out by Imageye because it can prevent extension-suggested subfolders from being applied consistently.
 
 ## Error Handling
 

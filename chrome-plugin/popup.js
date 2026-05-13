@@ -358,14 +358,14 @@ async function downloadSelected() {
   setStatus("Downloading...");
 
   try {
-    await ensureDownloadFolder(folder);
+    const backgroundFolderEnabled = await setDownloadFolder(folder);
     for (let i = 0; i < selected.length; i += 1) {
       const item = selected[i];
       const extension = inferExtension(item.url, item.format);
       const fileName = `${String(i + 1).padStart(3, "0")}.${extension}`;
       await downloadToChrome({
         url: item.url,
-        filename: `${folder}/${fileName}`,
+        filename: backgroundFolderEnabled ? fileName : `${folder}/${fileName}`,
         saveAs: false,
         conflictAction: "uniquify",
       });
@@ -379,13 +379,22 @@ async function downloadSelected() {
   setStatus(`Download started for ${selected.length} image(s) in "${folder}".`);
 }
 
-async function ensureDownloadFolder(folder) {
-  const marker = "data:text/plain;charset=utf-8,MediaFetch%20download%20folder";
-  await downloadToChrome({
-    url: marker,
-    filename: `${folder}/_mediafetch_folder.txt`,
-    saveAs: false,
-    conflictAction: "overwrite",
+function setDownloadFolder(folder) {
+  return new Promise((resolve) => {
+    chrome.runtime.sendMessage({ type: "mediafetch:set-download-folder", folder }, (response) => {
+      const error = chrome.runtime.lastError;
+      if (error) {
+        resolve(false);
+        return;
+      }
+
+      if (!response?.ok) {
+        resolve(false);
+        return;
+      }
+
+      resolve(true);
+    });
   });
 }
 
