@@ -5,6 +5,7 @@
   "description": "Extract images from the current page in your logged-in browser session.",
   "permissions": [
     "activeTab",
+    "contextMenus",
     "downloads",
     "scripting",
     "storage",
