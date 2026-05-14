@@ -1,8 +1,9 @@
 (() => {
-  const CONTENT_BUILD_HASH = "1082";
+  const CONTENT_BUILD_HASH = "1104";
   let lastInstagramSamplingDebug = null;
   let lastInstagramExternalSamplingDebug = null;
   let lastInstagramOriginalMediaKeys = null;
+  let lastBehanceOriginalDebug = null;
 
   chrome.runtime.onMessage.addListener((message, _sender, sendResponse) => {
     if (!["mediafetch:extract", "mediafetch:instagram-rendered-snapshot"].includes(message?.type)) {
@@ -101,10 +102,10 @@
       }
     };
 
-    if (/instagram\.com$/i.test(location.hostname) && domainOriginalUrls?.size) {
+    if (/(instagram\.com|behance\.net)$/i.test(location.hostname) && domainOriginalUrls?.size) {
       domainOriginalUrls.forEach((url) => {
         push(url, {
-          sourceHint: "instagram-sampled",
+          sourceHint: /behance\.net$/i.test(location.hostname) ? "behance-original" : "instagram-sampled",
         });
       });
     }
@@ -118,12 +119,21 @@
 
       const bestSrcset = pickBestSrcsetCandidate(img.getAttribute("srcset") || img.getAttribute("data-srcset") || "");
       if (bestSrcset) {
+        const srcsetSize = getSrcsetCandidateSize(bestSrcset, img);
         push(bestSrcset, {
-          width: img.naturalWidth || img.width || 0,
-          height: img.naturalHeight || img.height || 0,
+          width: srcsetSize.width || img.naturalWidth || img.width || 0,
+          height: srcsetSize.height || img.naturalHeight || img.height || 0,
           sourceHint: "rendered-srcset",
         });
       }
+
+      getImageAttributeUrls(img).forEach((url) => {
+        push(url, {
+          width: img.naturalWidth || img.width || 0,
+          height: img.naturalHeight || img.height || 0,
+          sourceHint: "rendered-data",
+        });
+      });
     });
 
     document.querySelectorAll('meta[property="og:image"], meta[name="twitter:image"], link[rel="image_src"]').forEach((node) => {
@@ -299,6 +309,10 @@
   }
 
   function pickBestSrcsetCandidate(srcset) {
+    return pickBestSrcsetCandidateInfo(srcset).url;
+  }
+
+  function pickBestSrcsetCandidateInfo(srcset) {
     const candidates = String(srcset || "")
       .split(",")
       .map((part) => part.trim())
@@ -308,7 +322,7 @@
       })
       .filter((item) => item.url);
 
-    if (!candidates.length) return "";
+    if (!candidates.length) return { url: "", descriptor: "" };
 
     const score = (descriptor) => {
       const value = String(descriptor || "").trim().toLowerCase();
@@ -318,12 +332,44 @@
       return 1;
     };
 
-    return candidates.sort((a, b) => score(b.descriptor) - score(a.descriptor))[0]?.url || "";
+    return candidates.sort((a, b) => score(b.descriptor) - score(a.descriptor))[0] || { url: "", descriptor: "" };
+  }
+
+  function getSrcsetCandidateSize(url, img) {
+    const srcset = img.getAttribute("srcset") || img.getAttribute("data-srcset") || "";
+    const info = pickBestSrcsetCandidateInfo(srcset);
+    if (normalizeUrl(info.url) !== normalizeUrl(url)) {
+      return { width: 0, height: 0 };
+    }
+
+    const descriptor = String(info.descriptor || "").trim().toLowerCase();
+    if (descriptor.endsWith("w")) {
+      const width = Number.parseInt(descriptor, 10) || 0;
+      const naturalWidth = Number(img.naturalWidth || img.width || 0);
+      const naturalHeight = Number(img.naturalHeight || img.height || 0);
+      const ratio = naturalWidth && naturalHeight ? naturalHeight / naturalWidth : 0;
+      return {
+        width,
+        height: ratio ? Math.round(width * ratio) : 0,
+      };
+    }
+
+    if (descriptor.endsWith("x")) {
+      const scale = Number.parseFloat(descriptor) || 0;
+      return {
+        width: Math.round((img.naturalWidth || img.width || 0) * scale),
+        height: Math.round((img.naturalHeight || img.height || 0) * scale),
+      };
+    }
+
+    return { width: 0, height: 0 };
   }
 
   function computeScore(url, sourceHint, width, height) {
     let score = 0;
-    if (sourceHint === "rendered-srcset") score += 400;
+    if (sourceHint === "behance-original") score += 560;
+    else if (sourceHint === "rendered-srcset") score += 400;
+    else if (sourceHint === "rendered-data") score += 360;
     else if (sourceHint === "rendered-meta") score += 320;
     else if (sourceHint === "rendered-current") score += 300;
     else score += 220;
@@ -331,6 +377,9 @@
     const lowered = String(url || "").toLowerCase();
     if (/(original|orig|full|master|raw|source|highres|hires|largest|large|xl|xxl|4096|2048)/.test(lowered)) {
       score += 120;
+    }
+    if (/\/project_modules\/max_3840\//i.test(lowered)) {
+      score += 220;
     }
     if (/(thumb|thumbnail|small|preview|avatar|icon|sprite|crop|tiny|medium)/.test(lowered)) {
       score -= 140;
@@ -461,6 +510,7 @@
   }
 
   function getBehanceOriginalUrlSet() {
+    lastBehanceOriginalDebug = null;
     const main = document.querySelector("main");
     if (!main) {
       return null;
@@ -481,6 +531,19 @@
 
     const firstCluster = takeLeadingCluster(candidateImages, 1100);
     const urls = createUrlSetFromCandidates(firstCluster);
+    const htmlHighResUrls = collectBehanceHighResUrlsFromHtml();
+    htmlHighResUrls.forEach((url) => urls.add(url));
+
+    lastBehanceOriginalDebug = {
+      candidateCount: candidateImages.length,
+      clusterCount: firstCluster.length,
+      urlCount: urls.size,
+      htmlHighResCount: htmlHighResUrls.size,
+      srcset3840Count: firstCluster.filter((candidate) =>
+        /\b3840w\b/i.test(candidate.img.getAttribute("srcset") || candidate.img.getAttribute("data-srcset") || "")
+      ).length,
+      preview: Array.from(urls).slice(0, 6),
+    };
 
     return urls.size ? urls : null;
   }
@@ -604,6 +667,7 @@
       debug.behance = {
         mainFound: !!main,
         mainTop: main ? getContainerTop(main) : null,
+        original: lastBehanceOriginalDebug,
       };
     }
 
@@ -1199,6 +1263,48 @@
     if (srcsetUrl) {
       urls.add(srcsetUrl);
     }
+
+    getImageAttributeUrls(img).forEach((url) => urls.add(url));
+  }
+
+  function getImageAttributeUrls(img) {
+    return [
+      "data-src",
+      "data-original",
+      "data-full",
+      "data-fullsrc",
+      "data-hires",
+      "data-high-res-src",
+      "data-large-src",
+      "data-image",
+      "data-url",
+    ].map((name) => normalizeUrl(img.getAttribute(name) || ""))
+      .filter(Boolean);
+  }
+
+  function collectBehanceHighResUrlsFromHtml() {
+    const urls = new Set();
+    const html = document.documentElement?.innerHTML || "";
+    if (!html) {
+      return urls;
+    }
+
+    const patterns = [
+      /https?:\\?\/\\?\/[^"'\\\s]+behance\.net\\?\/[^"'\s]*?\\?\/project_modules\\?\/(?:source|max_3840|max_2560|max_1920|3840|2560|1920)\\?\/[^"'\s<>)]+/gi,
+      /https?:\/\/[^"'\s]+behance\.net\/[^"'\s]*?\/project_modules\/(?:source|max_3840|max_2560|max_1920|3840|2560|1920)\/[^"'\s<>)]+/gi,
+    ];
+
+    patterns.forEach((pattern) => {
+      let match;
+      while ((match = pattern.exec(html)) !== null) {
+        const decoded = decodeEscapedUrl(match[0]);
+        if (decoded && /\/project_modules\/(?:source|max_3840|max_2560|max_1920|3840|2560|1920)\//i.test(decoded)) {
+          urls.add(decoded);
+        }
+      }
+    });
+
+    return urls;
   }
 
   function isInsideForeignPostLink(img) {

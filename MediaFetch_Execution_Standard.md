@@ -182,9 +182,30 @@ De-prioritize:
 
 If multiple Behance CDN sizes exist for the same visual, prefer:
 
-1. largest `srcset` candidate
-2. largest width/height variant
-3. URL variant containing original-size keywords
+1. explicit high-resolution URLs exposed by the page or page scripts
+   - `/project_modules/source/`
+   - `/project_modules/max_3840/`
+   - `/project_modules/max_2560/`
+   - `/project_modules/max_1920/`
+   - `/project_modules/3840/`
+   - `/project_modules/2560/`
+   - `/project_modules/1920/`
+2. largest `srcset` candidate, using descriptors such as `3840w` to infer display resolution
+3. high-resolution `data-*` image attributes
+   - `data-original`
+   - `data-full`
+   - `data-hires`
+   - `data-high-res-src`
+   - `data-large-src`
+4. largest rendered width/height variant
+5. URL variant containing original-size keywords
+
+Important Behance CDN rule:
+
+- Do not blindly synthesize `max_3840` URLs by rewriting lower-resolution paths such as `/project_modules/1400/...`.
+- Behance CDN may return a smaller actual file for a synthesized path.
+- A high-resolution URL should be treated as reliable only when it is actually exposed by the page, `srcset`, data attributes, or page script payload.
+- If the uploaded source image itself is small, MediaFetch should still extract it, but it cannot create a higher-resolution file than the source.
 
 #### Original Boundary Rules
 
@@ -651,3 +672,14 @@ When a domain rule changes, update this document with:
 - defined folder naming and download behavior targets
 - recorded Instagram debug findings about `/user/p/postCode` vs `/p/postCode`
 - recorded the rule that `maxImgIndex` must come from DOM evidence, not the current URL
+
+### 2026-05-14
+
+- recorded Instagram rendered multi-index sampling strategy
+- recorded Imageye-inspired Chrome download folder strategy using background `downloads.onDeterminingFilename`
+- verified Behance original-image extraction in Chrome plugin `contentBuildHash: 1104`
+- Behance stable behavior:
+  - extracts real high-resolution URLs exposed by Behance pages or scripts
+  - avoids unreliable synthetic `max_3840` URL rewriting
+  - preserves extraction when the source image is inherently small
+  - displays inferred resolution from `srcset` descriptors when available
