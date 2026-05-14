@@ -1,12 +1,20 @@
 (() => {
-  const CONTENT_BUILD_HASH = "1104";
+  const CONTENT_BUILD_HASH = "1108";
   let lastInstagramSamplingDebug = null;
   let lastInstagramExternalSamplingDebug = null;
   let lastInstagramOriginalMediaKeys = null;
   let lastBehanceOriginalDebug = null;
+  let lastXiaohongshuOriginalDebug = null;
+  let lastWeiboOriginalDebug = null;
+  let lastWeiboExternalSamplingDebug = null;
 
   chrome.runtime.onMessage.addListener((message, _sender, sendResponse) => {
-    if (!["mediafetch:extract", "mediafetch:instagram-rendered-snapshot"].includes(message?.type)) {
+    if (![
+      "mediafetch:extract",
+      "mediafetch:instagram-rendered-snapshot",
+      "mediafetch:weibo-layer-hints",
+      "mediafetch:weibo-rendered-snapshot",
+    ].includes(message?.type)) {
       return;
     }
 
@@ -16,6 +24,22 @@
           sendResponse({
             ok: true,
             snapshot: collectInstagramRenderedSnapshot(),
+          });
+          return;
+        }
+
+        if (message?.type === "mediafetch:weibo-layer-hints") {
+          sendResponse({
+            ok: true,
+            hints: collectWeiboLayerHints(),
+          });
+          return;
+        }
+
+        if (message?.type === "mediafetch:weibo-rendered-snapshot") {
+          sendResponse({
+            ok: true,
+            snapshot: collectWeiboRenderedSnapshot(),
           });
           return;
         }
@@ -43,14 +67,10 @@
     const items = [];
     const seen = new Set();
     const seenInstagramMediaItems = new Map();
+    const seenWeiboMediaItems = new Map();
     const domainOriginalUrls = await getDomainOriginalUrlSet(maxIndexHint);
     const externalUrls = Array.isArray(externalSampledUrls) ? externalSampledUrls : [];
-    externalUrls.forEach((url) => {
-      const normalized = normalizeUrl(url);
-      if (normalized) {
-        domainOriginalUrls?.add(normalized);
-      }
-    });
+    const externalMergeDebug = mergeExternalSampledUrls(domainOriginalUrls, externalUrls);
     rebuildInstagramOriginalMediaKeys(domainOriginalUrls);
     lastInstagramExternalSamplingDebug = /instagram\.com$/i.test(location.hostname) ? {
       sampleIndexes: Array.isArray(externalSampledIndexes) ? externalSampledIndexes : [],
@@ -58,11 +78,25 @@
       sampledMediaKeyCount: countInstagramMediaKeys(externalUrls),
       sampledUrlPreview: externalUrls.slice(0, 6),
     } : null;
+    lastWeiboExternalSamplingDebug = /weibo\.com$/i.test(location.hostname) ? {
+      layerIds: Array.isArray(externalSampledIndexes) ? externalSampledIndexes : [],
+      sampledUrlCount: externalUrls.length,
+      sampledMediaKeyCount: countWeiboMediaKeys(externalUrls),
+      acceptedUrlCount: externalMergeDebug.accepted.length,
+      acceptedMediaKeyCount: countWeiboMediaKeys(externalMergeDebug.accepted),
+      rejectedUrlCount: externalMergeDebug.rejected.length,
+      sampledUrlPreview: externalUrls.slice(0, 6),
+      acceptedUrlPreview: externalMergeDebug.accepted.slice(0, 6),
+      rejectedUrlPreview: externalMergeDebug.rejected.slice(0, 6),
+    } : null;
 
     const push = (rawUrl, options = {}) => {
-      const url = normalizeUrl(rawUrl);
+      const url = /weibo\.com$/i.test(location.hostname)
+        ? normalizeWeiboImageUrl(rawUrl)
+        : normalizeUrl(rawUrl);
       if (!url || seen.has(url)) return;
       const instagramMediaKey = /instagram\.com$/i.test(location.hostname) ? getInstagramMediaKey(url) : "";
+      const weiboMediaKey = /weibo\.com$/i.test(location.hostname) ? getWeiboMediaKey(url) : "";
       const width = Number(options.width || 0);
       const height = Number(options.height || 0);
       const area = width * height;
@@ -72,6 +106,20 @@
         const existing = seenInstagramMediaItems.get(instagramMediaKey);
         if (existing) {
           if (isBetterInstagramMediaVariant({ url, score, area }, existing)) {
+            const index = items.indexOf(existing);
+            if (index >= 0) {
+              items.splice(index, 1);
+            }
+            seen.delete(existing.url);
+          } else {
+            return;
+          }
+        }
+      }
+      if (weiboMediaKey) {
+        const existing = seenWeiboMediaItems.get(weiboMediaKey);
+        if (existing) {
+          if (isBetterWeiboMediaVariant({ url, score, area }, existing)) {
             const index = items.indexOf(existing);
             if (index >= 0) {
               items.splice(index, 1);
@@ -100,12 +148,19 @@
       if (instagramMediaKey) {
         seenInstagramMediaItems.set(instagramMediaKey, item);
       }
+      if (weiboMediaKey) {
+        seenWeiboMediaItems.set(weiboMediaKey, item);
+      }
     };
 
-    if (/(instagram\.com|behance\.net)$/i.test(location.hostname) && domainOriginalUrls?.size) {
+    if (/(instagram\.com|behance\.net|weibo\.com)$/i.test(location.hostname) && domainOriginalUrls?.size) {
       domainOriginalUrls.forEach((url) => {
         push(url, {
-          sourceHint: /behance\.net$/i.test(location.hostname) ? "behance-original" : "instagram-sampled",
+          sourceHint: /behance\.net$/i.test(location.hostname)
+            ? "behance-original"
+            : /weibo\.com$/i.test(location.hostname)
+              ? "weibo-original"
+              : "instagram-sampled",
         });
       });
     }
@@ -177,10 +232,51 @@
     };
   }
 
+  function mergeExternalSampledUrls(domainOriginalUrls, externalUrls) {
+    const accepted = [];
+    const rejected = [];
+    const weiboBaseKeys = new Set();
+
+    if (/weibo\.com$/i.test(location.hostname)) {
+      Array.from(domainOriginalUrls || []).forEach((item) => {
+        const key = getWeiboMediaKey(item);
+        if (key) weiboBaseKeys.add(key);
+      });
+    }
+
+    Array.from(externalUrls || []).forEach((url) => {
+      const normalized = /weibo\.com$/i.test(location.hostname)
+        ? normalizeWeiboImageUrl(url)
+        : normalizeUrl(url);
+      if (!normalized) {
+        rejected.push(String(url || ""));
+        return;
+      }
+
+      if (/weibo\.com$/i.test(location.hostname)) {
+        const key = getWeiboMediaKey(normalized);
+        if (weiboBaseKeys.size && (!key || !weiboBaseKeys.has(key))) {
+          rejected.push(normalized);
+          return;
+        }
+      }
+
+      domainOriginalUrls?.add(normalized);
+      accepted.push(normalized);
+    });
+
+    return { accepted, rejected };
+  }
+
   function inferProjectName() {
     const instagramFolder = inferInstagramFolderName();
     if (instagramFolder) {
       return instagramFolder;
+    }
+
+    const weiboFolder = inferWeiboFolderName();
+    if (weiboFolder) {
+      return weiboFolder;
     }
 
     const candidates = [
@@ -196,6 +292,214 @@
     }
 
     return "ProjectsA";
+  }
+
+  function inferWeiboFolderName() {
+    if (!/weibo\.com$/i.test(location.hostname)) {
+      return "";
+    }
+
+    const author = sanitizeFolderName(cleanWeiboTitlePart(inferWeiboAuthorName()));
+    const dateTimeCode = inferWeiboPostDateTimeCode();
+    const statusId = sanitizeFolderName(extractWeiboStatusId(location.href));
+
+    if (author && dateTimeCode) {
+      return sanitizeFolderName(`${author}_${dateTimeCode}`);
+    }
+
+    if (author) {
+      return author;
+    }
+
+    if (dateTimeCode) {
+      return dateTimeCode;
+    }
+
+    return statusId || "";
+  }
+
+  function inferWeiboAuthorName() {
+    const root = findWeiboPostContainer();
+    const candidates = [];
+
+    const push = (value) => {
+      const cleaned = cleanWeiboTitlePart(value);
+      if (cleaned) {
+        candidates.push(cleaned);
+      }
+    };
+
+    if (root) {
+      [
+        '[role="link"]',
+        'a[href*="/u/"]',
+        'a[href^="/u/"]',
+        'a[href^="/n/"]',
+        'a[href*="profile"]',
+        'span[title]',
+      ].forEach((selector) => {
+        const node = root.querySelector(selector);
+        if (!node) {
+          return;
+        }
+        push(node.getAttribute("title") || "");
+        push(node.textContent || "");
+      });
+    }
+
+    push(document.querySelector('meta[name="author"]')?.content || "");
+
+    const jsonMatches = [
+      /"screen_name"\s*:\s*"([^"]{1,80})"/i,
+      /"nick(?:name)?"\s*:\s*"([^"]{1,80})"/i,
+      /"userName"\s*:\s*"([^"]{1,80})"/i,
+    ];
+    const html = document.documentElement?.innerHTML || "";
+    jsonMatches.forEach((pattern) => {
+      const match = html.match(pattern);
+      if (match?.[1]) {
+        push(match[1]);
+      }
+    });
+
+    const title = document.title || document.querySelector('meta[property="og:title"]')?.content || "";
+    const titleMatch = title.match(/^(.{1,40}?)(?:的微博视频|的微博|[:：-]|\s)/);
+    if (titleMatch?.[1]) {
+      push(titleMatch[1]);
+    }
+
+    return candidates.find((value) => isUsableWeiboAuthor(value)) || "";
+  }
+
+  function inferWeiboPostDescriptor() {
+    const root = findWeiboPostContainer();
+    const candidates = [];
+
+    const push = (value) => {
+      const cleaned = cleanWeiboTitlePart(value);
+      if (cleaned) {
+        candidates.push(cleaned);
+      }
+    };
+
+    if (root) {
+      const textNodes = Array.from(root.querySelectorAll("span, div, p"))
+        .map((node) => node.textContent || "")
+        .map((text) => text.replace(/\s+/g, " ").trim())
+        .filter(Boolean)
+        .filter((text) => text.length >= 4);
+
+      textNodes.slice(0, 20).forEach((text) => push(text));
+    }
+
+    push(document.querySelector('meta[property="og:title"]')?.content || "");
+    push(document.querySelector('meta[name="description"]')?.content || "");
+    push(document.title || "");
+
+    return candidates.find((value) => isUsableWeiboDescriptor(value)) || "";
+  }
+
+  function cleanWeiboTitlePart(value) {
+    return String(value || "")
+      .replace(/\s+/g, " ")
+      .replace(/\\u003c[^>]*\\u003e/gi, " ")
+      .replace(/<[^>]+>/g, " ")
+      .replace(/[#＃][^#＃]{1,40}[#＃]/g, " ")
+      .replace(/https?:\/\/\S+/gi, " ")
+      .replace(/@[\w\-.一-龥]+/g, " ")
+      .replace(/\b微博视频号\b/g, " ")
+      .replace(/\b微博\b/g, " ")
+      .replace(/\bweibo\b/gi, " ")
+      .replace(/[|｜\-—–_:：]+/g, " ")
+      .replace(/[“”"'‘’]/g, "")
+      .replace(/[^\w\u4e00-\u9fff\s&()+,.]/g, " ")
+      .replace(/\s+/g, " ")
+      .trim()
+      .slice(0, 28);
+  }
+
+  function isUsableWeiboAuthor(value) {
+    const text = String(value || "").trim();
+    if (!text || text.length < 2) {
+      return false;
+    }
+    return !/^(微博|weibo|详情|全文|视频|图片|赞|评论|转发)$/i.test(text);
+  }
+
+  function isUsableWeiboDescriptor(value) {
+    const text = String(value || "").trim();
+    if (!text || text.length < 4) {
+      return false;
+    }
+    if (/^(微博|weibo|详情|全文|视频|图片|赞|评论|转发)$/i.test(text)) {
+      return false;
+    }
+    return !/^\d+$/.test(text);
+  }
+
+  function inferWeiboPostDateTimeCode() {
+    const candidates = [
+      ...Array.from(document.querySelectorAll("time[datetime]")).map((node) => node.getAttribute("datetime") || ""),
+      ...Array.from(document.querySelectorAll("[datetime]")).map((node) => node.getAttribute("datetime") || ""),
+      document.querySelector('meta[property="article:published_time"]')?.content || "",
+      document.querySelector('meta[name="date"]')?.content || "",
+      document.querySelector('meta[property="og:time"]')?.content || "",
+    ];
+
+    const html = document.documentElement?.innerHTML || "";
+    const patterns = [
+      /"(?:created_at|publish_time|published_at|status_time)"\s*:\s*"([^"]+)"/i,
+      /"(?:created_at|publish_time|published_at|status_time)"\s*:\s*(\d{10,13})/i,
+      /"page_info".{0,400}?"page_title"\s*:\s*"([^"]+)"/i,
+    ];
+
+    patterns.forEach((pattern) => {
+      const match = html.match(pattern);
+      if (match?.[1]) {
+        candidates.push(match[1]);
+      }
+    });
+
+    for (const value of candidates) {
+      const code = formatWeiboDateTimeCode(value);
+      if (code) {
+        return code;
+      }
+    }
+
+    return "";
+  }
+
+  function formatWeiboDateTimeCode(value) {
+    const raw = String(value || "").trim();
+    if (!raw) {
+      return "";
+    }
+
+    let date = null;
+    if (/^\d{10,13}$/.test(raw)) {
+      const numeric = Number(raw);
+      date = new Date(raw.length === 13 ? numeric : numeric * 1000);
+    } else {
+      const normalized = raw
+        .replace(/\u5e74|\/|\./g, "-")
+        .replace(/\u6708/g, "-")
+        .replace(/\u65e5/g, " ")
+        .replace(/\s+/g, " ")
+        .trim();
+      date = new Date(normalized);
+    }
+
+    if (!date || Number.isNaN(date.getTime())) {
+      return "";
+    }
+
+    const year = String(date.getFullYear()).slice(-2);
+    const month = String(date.getMonth() + 1).padStart(2, "0");
+    const day = String(date.getDate()).padStart(2, "0");
+    const hour = String(date.getHours()).padStart(2, "0");
+    const minute = String(date.getMinutes()).padStart(2, "0");
+    return `${year}${month}${day}${hour}${minute}`;
   }
 
   function cleanProjectTitle(value) {
@@ -308,6 +612,47 @@
     }
   }
 
+  function normalizeWeiboImageUrl(rawUrl) {
+    const decoded = decodeEscapedUrl(rawUrl);
+    if (!decoded) {
+      return "";
+    }
+
+    try {
+      const parsed = new URL(decoded);
+      if (!/(^|\.)sinaimg\.cn$/i.test(parsed.hostname)) {
+        return "";
+      }
+
+      const parts = parsed.pathname.split("/");
+      if (parts.length < 3) {
+        return "";
+      }
+
+      const fileName = parts[parts.length - 1] || "";
+      if (!/\.(?:jpe?g|png|gif|webp)(?:$|[?#])/i.test(fileName)) {
+        return "";
+      }
+
+      const sizePartIndex = parts.length - 2;
+      const sizePart = parts[sizePartIndex] || "";
+      if (isWeiboCdnSizeSegment(sizePart)) {
+        parts[sizePartIndex] = "mw2000";
+      }
+
+      parsed.pathname = parts.join("/");
+      parsed.search = "";
+      parsed.hash = "";
+      return parsed.toString();
+    } catch {
+      return "";
+    }
+  }
+
+  function isWeiboCdnSizeSegment(value) {
+    return /^(?:thumb\d+|thumbnail|square|orj\d+|wap\d+|mw\d+|bmiddle|small|large|oslarge)$/i.test(String(value || ""));
+  }
+
   function pickBestSrcsetCandidate(srcset) {
     return pickBestSrcsetCandidateInfo(srcset).url;
   }
@@ -367,7 +712,8 @@
 
   function computeScore(url, sourceHint, width, height) {
     let score = 0;
-    if (sourceHint === "behance-original") score += 560;
+    if (sourceHint === "weibo-original") score += 580;
+    else if (sourceHint === "behance-original") score += 560;
     else if (sourceHint === "rendered-srcset") score += 400;
     else if (sourceHint === "rendered-data") score += 360;
     else if (sourceHint === "rendered-meta") score += 320;
@@ -381,8 +727,14 @@
     if (/\/project_modules\/max_3840\//i.test(lowered)) {
       score += 220;
     }
+    if (/\/\/[^/]+\.sinaimg\.cn\/(?:mw2000|large|mw1024|oslarge)\//i.test(lowered)) {
+      score += 180;
+    }
     if (/(thumb|thumbnail|small|preview|avatar|icon|sprite|crop|tiny|medium)/.test(lowered)) {
       score -= 140;
+    }
+    if (/\/\/[^/]+\.sinaimg\.cn\/(?:thumb\d+|thumbnail|square|orj\d+|wap\d+|mw\d+|bmiddle)\//i.test(lowered)) {
+      score -= 120;
     }
     if (isInstagramCroppedSquareUrl(url)) {
       score -= 260;
@@ -391,6 +743,20 @@
     const area = (width || 0) * (height || 0);
     score += Math.min(500, Math.floor(area / 5000));
     return score;
+  }
+
+  function isBetterWeiboMediaVariant(candidate, existing) {
+    const candidateRank = getWeiboSizeRank(candidate.url);
+    const existingRank = getWeiboSizeRank(existing.url);
+    if (candidateRank !== existingRank) {
+      return candidateRank > existingRank;
+    }
+
+    if ((candidate.score || 0) !== (existing.score || 0)) {
+      return (candidate.score || 0) > (existing.score || 0);
+    }
+
+    return (candidate.area || 0) > (existing.area || 0);
   }
 
   function isBetterInstagramMediaVariant(candidate, existing) {
@@ -448,7 +814,87 @@
       return getBehanceOriginalUrlSet() || new Set();
     }
 
+    if (isXiaohongshuHost()) {
+      return getXiaohongshuOriginalUrlSet() || new Set();
+    }
+
+    if (/weibo\.com$/i.test(location.hostname)) {
+      return getWeiboOriginalUrlSet() || new Set();
+    }
+
     return null;
+  }
+
+  function getWeiboOriginalUrlSet() {
+    lastWeiboOriginalDebug = null;
+    if (!/weibo\.com$/i.test(location.hostname)) {
+      return null;
+    }
+
+    const root = findWeiboPostContainer();
+    const urls = new Set();
+    const candidateImages = root ? collectVisualCandidates(root, {
+      minArea: 60000,
+      isAllowed: (img, candidate) =>
+        isLikelyWeiboContentImage(img) &&
+        !isLikelyWeiboUtilityImage(img) &&
+        candidate.linkType !== "profile",
+    }) : [];
+
+    const mediaCandidates = selectWeiboPostMediaCandidates(candidateImages);
+    createUrlSetFromCandidates(mediaCandidates).forEach((url) => {
+      const largeUrl = normalizeWeiboImageUrl(url);
+      if (largeUrl) urls.add(largeUrl);
+    });
+
+    const layerHints = collectWeiboLayerHints(root);
+
+    lastWeiboOriginalDebug = {
+      containerFound: !!root,
+      containerTag: root ? root.tagName : null,
+      candidateCount: candidateImages.length,
+      clusterCount: mediaCandidates.length,
+      layerIdCount: layerHints.layerIds.length,
+      layerIds: layerHints.layerIds.slice(0, 12),
+      urlCount: urls.size,
+      preview: Array.from(urls).slice(0, 6),
+    };
+
+    return urls.size ? urls : null;
+  }
+
+  function getXiaohongshuOriginalUrlSet() {
+    lastXiaohongshuOriginalDebug = null;
+    if (!isXiaohongshuHost()) {
+      return null;
+    }
+
+    const root = findXiaohongshuPostContainer();
+    const urls = new Set();
+    const candidateImages = root ? collectVisualCandidates(root, {
+      minArea: 50000,
+      isAllowed: (img, candidate) =>
+        isLikelyXiaohongshuContentImage(img) &&
+        !isLikelyXiaohongshuUtilityImage(img) &&
+        candidate.linkType !== "profile",
+    }) : [];
+
+    const mediaCandidates = selectXiaohongshuPostMediaCandidates(candidateImages);
+    createUrlSetFromCandidates(mediaCandidates).forEach((url) => {
+      const normalized = normalizeUrl(url);
+      if (normalized) urls.add(normalized);
+    });
+
+    lastXiaohongshuOriginalDebug = {
+      containerFound: !!root,
+      containerTag: root ? root.tagName : null,
+      candidateCount: candidateImages.length,
+      clusterCount: mediaCandidates.length,
+      urlCount: urls.size,
+      preview: Array.from(urls).slice(0, 6),
+    };
+
+    return urls.size ? urls : null;
   }
 
   async function getInstagramOriginalUrlSet(maxIndexHint = 0) {
@@ -671,6 +1117,21 @@
       };
     }
 
+    if (isXiaohongshuHost()) {
+      debug.xiaohongshu = {
+        noteId: extractXiaohongshuNoteId(location.href),
+        original: lastXiaohongshuOriginalDebug,
+      };
+    }
+
+    if (/weibo\.com$/i.test(location.hostname)) {
+      debug.weibo = {
+        statusId: extractWeiboStatusId(location.href),
+        original: lastWeiboOriginalDebug,
+        externalSampling: lastWeiboExternalSamplingDebug,
+      };
+    }
+
     return debug;
   }
 
@@ -694,6 +1155,181 @@
       .sort((a, b) => b.score - a.score);
 
     return scopedCandidates[0]?.node || null;
+  }
+
+  function isXiaohongshuHost() {
+    return /(^|\.)xiaohongshu\.com$/i.test(location.hostname);
+  }
+
+  function findXiaohongshuPostContainer() {
+    const selectors = [
+      "main",
+      "article",
+      '[class*="note"]',
+      '[class*="Note"]',
+      '[class*="post"]',
+      '[class*="Post"]',
+      '[class*="content"]',
+      '[class*="Content"]',
+    ];
+
+    const scored = selectors
+      .flatMap((selector) => Array.from(document.querySelectorAll(selector)))
+      .filter((node, index, nodes) => node instanceof Element && nodes.indexOf(node) === index)
+      .map((node) => ({
+        node,
+        score: scoreXiaohongshuContainer(node),
+      }))
+      .filter((item) => item.score > 0)
+      .sort((a, b) => b.score - a.score);
+
+    return scored[0]?.node || document.querySelector("main") || document.body;
+  }
+
+  function scoreXiaohongshuContainer(node) {
+    if (!(node instanceof Element)) {
+      return 0;
+    }
+
+    const images = Array.from(node.querySelectorAll("img"));
+    if (!images.length) {
+      return 0;
+    }
+
+    let score = 0;
+    const text = `${node.getAttribute("class") || ""} ${node.getAttribute("id") || ""} ${node.getAttribute("data-testid") || ""}`;
+    if (/(note|post|content|feed|article|explore)/i.test(text)) {
+      score += 40;
+    }
+
+    images.forEach((img) => {
+      const area = Number(img.naturalWidth || img.width || 0) * Number(img.naturalHeight || img.height || 0);
+      const src = String(img.currentSrc || img.src || "");
+      if (/xhscdn\.com|snsimg\.com|qpic\.cn|imageView2/i.test(src)) score += 10;
+      if (area >= 40000) score += 8;
+      if (isLikelyXiaohongshuUtilityImage(img)) score -= 12;
+    });
+
+    const bounds = node.getBoundingClientRect();
+    if (bounds.top >= 0 && bounds.top < window.innerHeight * 2) {
+      score += 12;
+    }
+
+    return score;
+  }
+
+  function findWeiboPostContainer() {
+    const selectors = [
+      "article",
+      '[class*="Detail"]',
+      '[class*="detail"]',
+      '[class*="Feed_detail"]',
+      '[class*="feed-detail"]',
+      '[class*="card-wrap"]',
+      '[class*="Feed"]',
+      "main",
+    ];
+
+    const scored = selectors
+      .flatMap((selector) => Array.from(document.querySelectorAll(selector)))
+      .filter((node, index, nodes) => node instanceof Element && nodes.indexOf(node) === index)
+      .map((node) => ({
+        node,
+        score: scoreWeiboContainer(node),
+      }))
+      .filter((item) => item.score > 0)
+      .sort((a, b) => b.score - a.score);
+
+    return scored[0]?.node || document.querySelector("main") || document.body;
+  }
+
+  function scoreWeiboContainer(node) {
+    if (!(node instanceof Element)) {
+      return 0;
+    }
+
+    const images = Array.from(node.querySelectorAll("img"));
+    if (!images.length) {
+      return 0;
+    }
+
+    let score = 0;
+    const text = `${node.getAttribute("class") || ""} ${node.getAttribute("data-testid") || ""} ${node.getAttribute("role") || ""}`;
+    if (/(detail|feed|card|微博|weibo|article|status)/i.test(text)) {
+      score += 45;
+    }
+
+    images.forEach((img) => {
+      const url = normalizeWeiboImageUrl(img.currentSrc || img.src || "");
+      const area = Number(img.naturalWidth || img.width || 0) * Number(img.naturalHeight || img.height || 0);
+      if (url) score += 10;
+      if (area >= 30000) score += 8;
+      if (isLikelyWeiboUtilityImage(img)) score -= 12;
+    });
+
+    const bounds = node.getBoundingClientRect();
+    if (bounds.top >= 0 && bounds.top < window.innerHeight * 1.8) {
+      score += 15;
+    }
+
+    return score;
+  }
+
+  function selectXiaohongshuPostMediaCandidates(candidates) {
+    const realMedia = candidates.filter((candidate) => {
+      const url = normalizeUrl(candidate.img.currentSrc || candidate.img.src || "");
+      return url &&
+        candidate.width >= 220 &&
+        candidate.height >= 220 &&
+        candidate.area >= 50000;
+    });
+
+    if (!realMedia.length) {
+      return [];
+    }
+
+    const firstCluster = takeLeadingCluster(realMedia, 800);
+    return firstCluster.filter((candidate) => candidate.linkType !== "profile").slice(0, 20);
+  }
+
+  function selectWeiboPostMediaCandidates(candidates) {
+    const realMedia = candidates.filter((candidate) => {
+      const url = normalizeWeiboImageUrl(candidate.img.currentSrc || candidate.img.src || "");
+      return url &&
+        candidate.width >= 240 &&
+        candidate.height >= 160 &&
+        candidate.area >= 60000 &&
+        !/tvax\d*\.sinaimg\.cn|h5\.sinaimg\.cn/i.test(url);
+    });
+
+    if (!realMedia.length) {
+      return [];
+    }
+
+    const firstCluster = takeLeadingCluster(realMedia, 700);
+    return firstCluster.slice(0, 18);
+  }
+
+  function isLikelyXiaohongshuContentImage(img) {
+    const urls = [
+      normalizeUrl(img.currentSrc || img.src || ""),
+      ...getImageAttributeUrls(img),
+    ].filter(Boolean);
+
+    return urls.some((url) => !/avatar|emoji|icon|badge|sprite|logo/i.test(url));
+  }
+
+  function isLikelyXiaohongshuUtilityImage(img) {
+    const text = `${img.getAttribute("alt") || ""} ${img.getAttribute("class") || ""} ${img.currentSrc || img.src || ""}`.toLowerCase();
+    const width = Number(img.naturalWidth || img.width || 0);
+    const height = Number(img.naturalHeight || img.height || 0);
+    const area = width * height;
+
+    if (/(avatar|profile|icon|logo|badge|emoji|emoticon|sprite|qr|qrcode)/i.test(text)) {
+      return true;
+    }
+
+    return area > 0 && area < 12000;
   }
 
   function scoreInstagramContainer(node) {
@@ -1157,6 +1793,203 @@
     }
   }
 
+  function getWeiboMediaKey(rawUrl) {
+    const url = normalizeWeiboImageUrl(rawUrl);
+    if (!url) {
+      return "";
+    }
+
+    try {
+      const parsed = new URL(url);
+      const fileName = decodeURIComponent(parsed.pathname.split("/").filter(Boolean).pop() || "");
+      return fileName ? `file:${fileName.toLowerCase()}` : `path:${parsed.hostname}${parsed.pathname}`;
+    } catch {
+      return "";
+    }
+  }
+
+  function countWeiboMediaKeys(urls) {
+    const keys = new Set();
+    Array.from(urls || []).forEach((url) => {
+      const key = getWeiboMediaKey(url);
+      if (key) {
+        keys.add(key);
+      }
+    });
+    return keys.size;
+  }
+
+  function getWeiboSizeRank(rawUrl) {
+    try {
+      const parsed = new URL(normalizeUrl(rawUrl));
+      const parts = parsed.pathname.split("/").filter(Boolean);
+      const size = String(parts[parts.length - 2] || "").toLowerCase();
+      if (size === "large" || size === "oslarge") return 100;
+      if (size === "mw2000") return 90;
+      if (size === "mw1024") return 80;
+      if (size === "mw690" || size === "bmiddle") return 60;
+      if (/^orj\d+$/i.test(size)) return 40;
+      if (/^(?:thumb|wap|mw)\d+$/i.test(size)) return 20;
+      if (/^(?:thumbnail|square|small)$/i.test(size)) return 10;
+      return 50;
+    } catch {
+      return 0;
+    }
+  }
+
+  function collectWeiboUrlsFromHtml(root = document.documentElement) {
+    const urls = new Set();
+    const html = root?.innerHTML || document.documentElement?.innerHTML || "";
+    if (!html) {
+      return urls;
+    }
+
+    const patterns = [
+      /https?:\\?\/\\?\/[^"'\\\s<>]+\.sinaimg\.cn\\?\/[^"'\s<>]+\.(?:jpe?g|png|gif|webp)/gi,
+      /\/\/[^"'\\\s<>]+\.sinaimg\.cn\/[^"'\s<>]+\.(?:jpe?g|png|gif|webp)/gi,
+      /(?:pic_src|picUrl|original_pic|thumbnail_pic|bmiddle_pic)["'=:%\\\s]+(https?:\\?\/\\?\/[^"'\\\s<>]+\.sinaimg\.cn\\?\/[^"'\s<>]+)/gi,
+    ];
+
+    patterns.forEach((pattern) => {
+      let match;
+      while ((match = pattern.exec(html)) !== null) {
+        const raw = match[1] || match[0];
+        const normalized = normalizeWeiboImageUrl(raw);
+        if (normalized) {
+          urls.add(normalized);
+        }
+      }
+    });
+
+    return urls;
+  }
+
+  function collectWeiboLayerHints(root = findWeiboPostContainer()) {
+    const layerIds = new Set();
+    const fallbackLayerIds = new Set();
+    const urls = new Set();
+    const scope = root || document;
+    const statusId = extractWeiboStatusId(location.href);
+
+    Array.from(scope.querySelectorAll?.("a[href], [action-data], [data-url], [data-href]") || []).forEach((node) => {
+      [
+        node.getAttribute("href") || "",
+        node.getAttribute("action-data") || "",
+        node.getAttribute("data-url") || "",
+        node.getAttribute("data-href") || "",
+      ].forEach((value) => {
+        collectWeiboLayerIdsFromText(value, layerIds, fallbackLayerIds);
+        collectWeiboImageUrlsFromText(value, urls);
+      });
+    });
+
+    collectWeiboLayerIdsFromText(scope.innerHTML || "", layerIds, fallbackLayerIds);
+
+    if (!layerIds.size) {
+      collectWeiboLayerIdsFromText(document.documentElement?.innerHTML || "", layerIds, fallbackLayerIds);
+    }
+
+    if (!layerIds.size) {
+      fallbackLayerIds.forEach((id) => layerIds.add(id));
+    }
+
+    return {
+      statusId,
+      layerIds: Array.from(layerIds).slice(0, 18),
+      urls: Array.from(urls).map((url) => normalizeWeiboImageUrl(url)).filter(Boolean),
+    };
+  }
+
+  function collectWeiboLayerIdsFromText(value, layerIds, fallbackLayerIds) {
+    const text = String(value || "").replace(/&amp;/g, "&");
+    if (!text) {
+      return;
+    }
+
+    [
+      /[?&]layerid=(\d{8,})/gi,
+      /(?:layerid|layer_id)["'=:%\s]+(\d{8,})/gi,
+    ].forEach((pattern) => {
+      let match;
+      while ((match = pattern.exec(text)) !== null) {
+        if (match[1]) {
+          layerIds.add(match[1]);
+        }
+      }
+    });
+
+    [
+      /(?:mid|mblogid)["'=:%\s]+(\d{12,})/gi,
+    ].forEach((pattern) => {
+      let match;
+      while ((match = pattern.exec(text)) !== null) {
+        if (match[1]) {
+          fallbackLayerIds.add(match[1]);
+        }
+      }
+    });
+  }
+
+  function collectWeiboImageUrlsFromText(value, urls) {
+    const text = String(value || "");
+    if (!text || !/sinaimg\.cn/i.test(text)) {
+      return;
+    }
+
+    const matches = text.match(/https?:\\?\/\\?\/[^"'\\\s&<>]+\.sinaimg\.cn\\?\/[^"'\s&<>]+|\/\/[^"'\\\s&<>]+\.sinaimg\.cn\/[^"'\s&<>]+/gi) || [];
+    matches.forEach((match) => {
+      const normalized = normalizeWeiboImageUrl(match);
+      if (normalized) {
+        urls.add(normalized);
+      }
+    });
+  }
+
+  function isLikelyWeiboContentImage(img) {
+    const url = normalizeWeiboImageUrl(img.currentSrc || img.src || "");
+    if (url) {
+      return true;
+    }
+
+    return getImageAttributeUrls(img).some((candidate) => !!normalizeWeiboImageUrl(candidate));
+  }
+
+  function isLikelyWeiboUtilityImage(img) {
+    const text = `${img.getAttribute("alt") || ""} ${img.getAttribute("class") || ""} ${img.currentSrc || img.src || ""}`.toLowerCase();
+    const width = Number(img.naturalWidth || img.width || 0);
+    const height = Number(img.naturalHeight || img.height || 0);
+    const area = width * height;
+    if (/(avatar|face|profile|icon|logo|badge|emoji|emoticon|verified|vip|sprite)/i.test(text)) {
+      return true;
+    }
+    if (/tvax\d*\.sinaimg\.cn|h5\.sinaimg\.cn/i.test(text)) {
+      return true;
+    }
+    return area > 0 && area < 12000;
+  }
+
+  function extractWeiboStatusId(value) {
+    try {
+      const parsed = new URL(value, location.href);
+      const detailMatch = parsed.pathname.match(/\/detail\/([A-Za-z0-9]+)/i);
+      if (detailMatch) return detailMatch[1];
+      const statusMatch = parsed.pathname.match(/\/(?:u\/)?\d+\/([A-Za-z0-9]+)/i);
+      return statusMatch ? statusMatch[1] : "";
+    } catch {
+      return "";
+    }
+  }
+
+  function extractXiaohongshuNoteId(value) {
+    try {
+      const parsed = new URL(value, location.href);
+      const match = parsed.pathname.match(/\/explore\/([A-Za-z0-9]+)/i);
+      return match ? match[1] : "";
+    } catch {
+      return "";
+    }
+  }
+
   function collectInstagramRenderedSnapshot() {
     const container = findInstagramPostContainer();
     const urls = new Set();
@@ -1182,6 +2015,46 @@
       containerFound: !!container,
       urls: Array.from(urls),
     };
+  }
+
+  function collectWeiboRenderedSnapshot() {
+    const root = document.body || findWeiboPostContainer();
+    const urls = new Set();
+    const items = [];
+    const candidates = root ? collectVisualCandidates(root, {
+      minArea: 60000,
+      isAllowed: (img, candidate) =>
+        isLikelyWeiboContentImage(img) &&
+        !isLikelyWeiboUtilityImage(img) &&
+        candidate.linkType !== "profile",
+    }) : [];
+
+    selectWeiboPostMediaCandidates(candidates).forEach((candidate) => {
+      appendCandidateUrls(urls, candidate.img);
+    });
+
+    Array.from(urls).forEach((url) => {
+      const normalized = normalizeWeiboImageUrl(url);
+      if (normalized) {
+        items.push(normalized);
+      }
+    });
+
+    return {
+      statusId: extractWeiboStatusId(location.href),
+      layerId: extractCurrentWeiboLayerId(),
+      containerFound: !!root,
+      urls: items,
+    };
+  }
+
+  function extractCurrentWeiboLayerId() {
+    try {
+      const parsed = new URL(location.href);
+      return parsed.searchParams.get("layerid") || "";
+    } catch {
+      return "";
+    }
   }
 
   function decodeEscapedUrl(value) {
@@ -1227,6 +2100,21 @@
       }
     }
 
+    if (/weibo\.com$/i.test(location.hostname)) {
+      if (/\/(?:u\/)?\d+\/?$/i.test(href) || /\/profile\//i.test(href)) {
+        return "profile";
+      }
+    }
+
+    if (isXiaohongshuHost()) {
+      if (/\/user\/profile\//i.test(href) || /^\/user\/profile\//i.test(href)) {
+        return "profile";
+      }
+      if (/\/explore\//i.test(href)) {
+        return href.includes(location.pathname) ? "self-post" : "foreign-post";
+      }
+    }
+
     return "other-link";
   }
 
@@ -1268,7 +2156,7 @@
   }
 
   function getImageAttributeUrls(img) {
-    return [
+    const urls = [
       "data-src",
       "data-original",
       "data-full",
@@ -1280,6 +2168,27 @@
       "data-url",
     ].map((name) => normalizeUrl(img.getAttribute(name) || ""))
       .filter(Boolean);
+
+    if (/weibo\.com$/i.test(location.hostname)) {
+      ["data-pic", "data-pic-src", "action-data"].forEach((name) => {
+        const normalized = normalizeWeiboImageUrl(img.getAttribute(name) || "");
+        if (normalized) urls.push(normalized);
+      });
+
+      Array.from(img.attributes || []).forEach((attr) => {
+        const value = String(attr.value || "");
+        if (!/sinaimg\.cn/i.test(value)) {
+          return;
+        }
+        const matches = value.match(/https?:\\?\/\\?\/[^"'\\\s&<>]+\.sinaimg\.cn\\?\/[^"'\s&<>]+|\/\/[^"'\\\s&<>]+\.sinaimg\.cn\/[^"'\s&<>]+/gi) || [];
+        matches.forEach((match) => {
+          const normalized = normalizeWeiboImageUrl(match);
+          if (normalized) urls.push(normalized);
+        });
+      });
+    }
+
+    return urls;
   }
 
   function collectBehanceHighResUrlsFromHtml() {

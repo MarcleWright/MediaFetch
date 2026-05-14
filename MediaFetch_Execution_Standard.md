@@ -146,22 +146,22 @@ Prefer the actual project title and prefer large presentation images over thumbn
 
 Priority:
 
-1. `meta[property="og:title"]`
-2. `document.title`
-3. visible page title or project heading
+1. `author_yymmddhhmm`
+2. `og:title`
+3. `document.title`
 
 Cleanup rules:
 
-- remove `| Behance`
-- remove `- Behance`
-- remove trailing `Adobe`
-- keep the project title itself
-- do not use the author name alone as folder name unless the project title is missing
+- author should come from the post owner, not UI labels
+- timestamp should come from page time evidence when available
+- use `yymmddhhmm`
+- if no timestamp is available, fall back to `author`
+- if author and timestamp are both unavailable, fall back to status id
 
 Expected output examples:
 
-- `Future Sedan Concept`
-- `Brand Campaign 2026`
+- `username_2605142030`
+- `brandname_2605010915`
 
 #### Image Parsing
 
@@ -470,21 +470,22 @@ Prefer post-related images and avoid navigation or profile assets.
 
 Priority:
 
-1. post author + concise post descriptor
+1. `author_yymmddhhmm`
 2. `og:title`
 3. `document.title`
 
 Cleanup rules:
 
-- remove `- 微博`
-- remove site suffix noise
-- avoid entire post body if it is extremely long
-- cap final result to 64 characters
+- author should come from the post owner, not UI labels
+- timestamp should come from page time evidence when available
+- use `yymmddhhmm`
+- if no timestamp is available, fall back to `author`
+- if author and timestamp are both unavailable, fall back to status id
 
 Expected output examples:
 
-- `username - poster series`
-- `brandname - event campaign`
+- `username_2605142030`
+- `brandname_2605010915`
 
 #### Image Parsing
 
@@ -500,6 +501,64 @@ De-prioritize:
 - emoji assets
 - badges
 - feed UI icons
+
+#### Original Selection
+
+Chrome-plugin Weibo extraction should:
+
+1. Restrict Weibo `Original` candidates to real Sina image CDN files such as `*.sinaimg.cn`.
+2. Reject non-image page URLs, including `.htm` page links, from the Weibo image candidate list.
+3. Normalize known Sina image CDN size folders such as `thumb*`, `thumbnail`, `square`, `orj*`, `wap*`, `mw*`, and `bmiddle` to `mw2000` when building original candidates.
+4. Deduplicate Sina image variants by stable image filename.
+5. Prefer the current post/detail container and avoid obvious avatars, emoji, badges, profile images, and tiny UI assets.
+6. When the current Weibo post exposes `layerid`, the Chrome plugin may navigate the active tab to `?layerid=...`, wait for the rendered large-image layer, collect rendered `img.currentSrc` candidates, and restore the original URL.
+
+#### Download Issues and Resolution
+
+Observed problem:
+
+- Weibo Sina image CDN URLs such as `mw2000` may return anti-hotlink HTML like `code.htm` when downloaded directly through `chrome.downloads.download(remoteUrl)`.
+- In Chrome this can surface as `001.htm` or `code.htm`, with the browser reporting that it could not extract the file from the site.
+
+Resolution:
+
+1. Use a background service worker to install a temporary request-header rule for Sina image CDN requests.
+2. Set `Referer` to the current Weibo page URL, not a generic site root.
+3. Set `Origin: https://weibo.com`.
+4. Preserve plugin-assigned sequential filenames in `downloads.onDeterminingFilename`.
+5. For Sina image URLs, prefer fetching the image body first and then downloading a local `blob:` URL instead of passing the remote CDN URL directly to Chrome downloads.
+6. Keep the direct remote download path only as a fallback when blob download is unnecessary or unsupported.
+
+### Xiaohongshu
+
+#### Goal
+
+Keep broad image extraction, but make `Original` labeling correspond to the note's actual content images.
+
+#### Image Parsing
+
+Prefer:
+
+- note body images
+- the leading image cluster in the note content
+
+Keep available but de-prioritize for `Original` marking:
+
+- avatars
+- badges
+- emoji
+- logos
+- tiny utility images
+
+#### Original Selection
+
+Chrome-plugin Xiaohongshu extraction should:
+
+1. Keep the generic image extraction behavior so page coverage stays broad.
+2. Build a Xiaohongshu-specific `Original` whitelist from the note's main content container.
+3. Use the leading content-image cluster as the likely note media group.
+4. Exclude profile-linked images and obvious utility assets from the Xiaohongshu `Original` set.
+5. Use the whitelist only for `Original` labeling; do not hide other extracted images.
 
 ### Generic Portfolio or Article Sites
 
@@ -683,3 +742,24 @@ When a domain rule changes, update this document with:
   - avoids unreliable synthetic `max_3840` URL rewriting
   - preserves extraction when the source image is inherently small
   - displays inferred resolution from `srcset` descriptors when available
+- added Chrome-plugin Weibo extraction rule for `contentBuildHash: 1105`
+  - restricts Weibo originals to Sina image CDN files
+  - rejects `.htm` and other non-image page URLs from Weibo candidates
+  - upgrades known Sina thumbnail size folders to `large`
+- refined Chrome-plugin Weibo extraction for `contentBuildHash: 1106`
+  - uses Imageye-style rendered image collection on Weibo `layerid` pages
+  - changes Weibo original-size normalization from `large` to `mw2000`
+  - stops treating arbitrary Sina image URLs found in page HTML as post originals
+- refined Chrome-plugin Weibo extraction for `contentBuildHash: 1107`
+  - accepts `layerid` sampled URLs only when their stable image filename matches media already found in the current post DOM
+  - prevents unrelated images rendered by the large-image layer from being merged into the post's Original set
+- added Chrome-plugin Weibo download support
+  - installs a dynamic request-header rule for Sina image CDN downloads with `Referer: https://weibo.com/`
+  - preserves the plugin-requested sequential filenames when Sina returns an HTML anti-hotlink response filename such as `code.htm`
+- refined Chrome-plugin Weibo download support
+  - uses the current Weibo page URL as the Sina image request `Referer`
+  - for Sina image URLs, fetches the image body first and then downloads a local blob URL instead of downloading the remote URL directly
+  - avoids the browser saving anti-hotlink HTML responses such as `001.htm`
+- updated Chrome-plugin content build to `contentBuildHash: 1108`
+  - Weibo folder naming now uses `author_yymmddhhmm` with fallback to author, then status id
+  - Xiaohongshu now keeps broad extraction but uses a note-content whitelist for `Original` labeling

@@ -92,8 +92,11 @@ async function extractFromCurrentTab() {
     });
 
     const maxIndexHint = await probeInstagramMaxIndex(tab);
-    const renderedSamples = await collectInstagramRenderedSamples(tab, maxIndexHint);
-    const response = await requestExtraction(tab, maxIndexHint, renderedSamples.urls, renderedSamples.indexes);
+    const instagramSamples = await collectInstagramRenderedSamples(tab, maxIndexHint);
+    const weiboSamples = await collectWeiboRenderedSamples(tab);
+    const sampledUrls = [...instagramSamples.urls, ...weiboSamples.urls];
+    const sampledIndexes = [...instagramSamples.indexes, ...weiboSamples.layerIds];
+    const response = await requestExtraction(tab, maxIndexHint, sampledUrls, sampledIndexes);
     if (!response?.ok) {
       throw new Error(response?.error || "Extraction failed.");
     }
@@ -209,6 +212,81 @@ async function requestInstagramRenderedSnapshot(tab) {
       files: ["content.js"],
     });
     const response = await chrome.tabs.sendMessage(tab.id, { type: "mediafetch:instagram-rendered-snapshot" });
+    return response?.ok ? response.snapshot : null;
+  }
+}
+
+async function collectWeiboRenderedSamples(tab) {
+  const url = String(tab?.url || "");
+  if (!/^https:\/\/weibo\.com\//i.test(url) || !tab?.id) {
+    return { urls: [], layerIds: [] };
+  }
+
+  const hints = await requestWeiboLayerHints(tab);
+  const layerIds = Array.from(new Set(hints?.layerIds || [])).slice(0, 12);
+  if (!layerIds.length) {
+    return { urls: [], layerIds: [] };
+  }
+
+  const originalUrl = url;
+  const urls = new Set();
+
+  try {
+    for (const layerId of layerIds) {
+      const probeUrl = new URL(originalUrl);
+      probeUrl.searchParams.set("layerid", String(layerId));
+
+      await chrome.tabs.update(tab.id, { url: probeUrl.toString() });
+      await waitForTabComplete(tab.id, 15000);
+      await delay(1200);
+
+      const snapshot = await requestWeiboRenderedSnapshot(tab);
+      (snapshot?.urls || []).forEach((item) => {
+        if (item) urls.add(item);
+      });
+    }
+  } catch {
+    // Keep best-effort samples; final extraction still uses the current DOM.
+  } finally {
+    try {
+      await chrome.tabs.update(tab.id, { url: originalUrl });
+      await waitForTabComplete(tab.id, 15000);
+      await delay(800);
+    } catch {
+      // Ignore restore failures; the extraction request below will surface connection issues.
+    }
+  }
+
+  return {
+    urls: Array.from(urls),
+    layerIds,
+  };
+}
+
+async function requestWeiboLayerHints(tab) {
+  try {
+    const response = await chrome.tabs.sendMessage(tab.id, { type: "mediafetch:weibo-layer-hints" });
+    return response?.ok ? response.hints : null;
+  } catch {
+    await chrome.scripting.executeScript({
+      target: { tabId: tab.id },
+      files: ["content.js"],
+    });
+    const response = await chrome.tabs.sendMessage(tab.id, { type: "mediafetch:weibo-layer-hints" });
+    return response?.ok ? response.hints : null;
+  }
+}
+
+async function requestWeiboRenderedSnapshot(tab) {
+  try {
+    const response = await chrome.tabs.sendMessage(tab.id, { type: "mediafetch:weibo-rendered-snapshot" });
+    return response?.ok ? response.snapshot : null;
+  } catch {
+    await chrome.scripting.executeScript({
+      target: { tabId: tab.id },
+      files: ["content.js"],
+    });
+    const response = await chrome.tabs.sendMessage(tab.id, { type: "mediafetch:weibo-rendered-snapshot" });
     return response?.ok ? response.snapshot : null;
   }
 }
@@ -359,16 +437,26 @@ async function downloadSelected() {
 
   try {
     const backgroundFolderEnabled = await setDownloadFolder(folder);
+    const fileNames = selected.map((item, index) => {
+      const extension = inferExtension(item.url, item.format);
+      return `${String(index + 1).padStart(3, "0")}.${extension}`;
+    });
+    const [tab] = await chrome.tabs.query({ active: true, currentWindow: true });
+    await prepareDownloads(selected.map((item) => item.url), fileNames, tab?.url || "");
+
     for (let i = 0; i < selected.length; i += 1) {
       const item = selected[i];
-      const extension = inferExtension(item.url, item.format);
-      const fileName = `${String(i + 1).padStart(3, "0")}.${extension}`;
-      await downloadToChrome({
-        url: item.url,
-        filename: backgroundFolderEnabled ? fileName : `${folder}/${fileName}`,
-        saveAs: false,
-        conflictAction: "uniquify",
-      });
+      const fileName = fileNames[i];
+      if (isSinaimgUrl(item.url)) {
+        await downloadFetchedBlob(item.url, backgroundFolderEnabled ? fileName : `${folder}/${fileName}`);
+      } else {
+        await downloadToChrome({
+          url: item.url,
+          filename: backgroundFolderEnabled ? fileName : `${folder}/${fileName}`,
+          saveAs: false,
+          conflictAction: "uniquify",
+        });
+      }
     }
   } catch (error) {
     const message = error instanceof Error ? error.message : String(error);
@@ -377,6 +465,14 @@ async function downloadSelected() {
   }
 
   setStatus(`Download started for ${selected.length} image(s) in "${folder}".`);
+}
+
+function prepareDownloads(urls, fileNames, pageUrl) {
+  return new Promise((resolve) => {
+    chrome.runtime.sendMessage({ type: "mediafetch:prepare-downloads", urls, fileNames, pageUrl }, () => {
+      resolve();
+    });
+  });
 }
 
 function setDownloadFolder(folder) {
@@ -415,6 +511,49 @@ function downloadToChrome(options) {
       resolve(downloadId);
     });
   });
+}
+
+async function downloadFetchedBlob(url, filename) {
+  const response = await fetch(url, {
+    method: "GET",
+    credentials: "include",
+    cache: "no-store",
+  });
+
+  if (!response.ok) {
+    throw new Error(`Image request failed: ${response.status}`);
+  }
+
+  const contentType = String(response.headers.get("content-type") || "").toLowerCase();
+  if (contentType && !contentType.startsWith("image/")) {
+    throw new Error(`Unexpected response type: ${contentType}`);
+  }
+
+  const blob = await response.blob();
+  if (!blob.size) {
+    throw new Error("Image response was empty.");
+  }
+
+  const objectUrl = URL.createObjectURL(blob);
+  try {
+    await downloadToChrome({
+      url: objectUrl,
+      filename,
+      saveAs: false,
+      conflictAction: "uniquify",
+    });
+  } finally {
+    setTimeout(() => URL.revokeObjectURL(objectUrl), 15000);
+  }
+}
+
+function isSinaimgUrl(url) {
+  try {
+    const parsed = new URL(url);
+    return /(^|\.)sinaimg\.cn$/i.test(parsed.hostname);
+  } catch {
+    return false;
+  }
 }
 
 function render() {

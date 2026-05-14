@@ -1,5 +1,8 @@
 let currentDownloadFolder = "";
+let pendingDownloadFileNames = [];
+let currentDownloadReferer = "";
 const DOWNLOAD_ORIGINALS_MENU_ID = "mediafetch-download-originals";
+const WEIBO_DOWNLOAD_RULE_ID = 901001;
 
 chrome.runtime.onInstalled.addListener(() => {
   setupContextMenus();
@@ -32,14 +35,26 @@ chrome.contextMenus.onClicked.addListener((info, tab) => {
 });
 
 chrome.runtime.onMessage.addListener((message, _sender, sendResponse) => {
-  if (message?.type !== "mediafetch:set-download-folder") {
+  if (message?.type === "mediafetch:set-download-folder") {
+    currentDownloadFolder = sanitizePathPart(message.folder || "");
+    sendResponse({ ok: true });
     return;
   }
 
-  currentDownloadFolder = sanitizePathPart(message.folder || "");
-  sendResponse({ ok: true });
+  if (message?.type === "mediafetch:prepare-downloads") {
+    pendingDownloadFileNames = Array.isArray(message.fileNames)
+      ? message.fileNames.map((item) => sanitizeFileName(item)).filter(Boolean)
+      : [];
+    currentDownloadReferer = normalizeHttpUrl(message.pageUrl || "") || "https://weibo.com/";
 
-  return;
+    setupDownloadHeaderRules(message.urls || [], currentDownloadReferer)
+      .then(() => sendResponse({ ok: true }))
+      .catch((error) => sendResponse({
+        ok: false,
+        error: error instanceof Error ? error.message : String(error),
+      }));
+    return true;
+  }
 });
 
 chrome.downloads.onDeterminingFilename.addListener((downloadItem, suggest) => {
@@ -48,7 +63,9 @@ chrome.downloads.onDeterminingFilename.addListener((downloadItem, suggest) => {
     return;
   }
 
-  const fileName = sanitizeFileName(downloadItem.filename || "");
+  const fileName = pendingDownloadFileNames.length
+    ? pendingDownloadFileNames.shift()
+    : sanitizeFileName(downloadItem.filename || "");
   if (!fileName) {
     suggest();
     return;
@@ -69,8 +86,11 @@ chrome.downloads.onDeterminingFilename.addListener((downloadItem, suggest) => {
 async function downloadOriginalsFromTab(tab) {
   showActionStatus("...", "#2563eb");
   const maxIndexHint = await probeInstagramMaxIndex(tab);
-  const renderedSamples = await collectInstagramRenderedSamples(tab, maxIndexHint);
-  const response = await requestExtraction(tab, maxIndexHint, renderedSamples.urls, renderedSamples.indexes);
+  const instagramSamples = await collectInstagramRenderedSamples(tab, maxIndexHint);
+  const weiboSamples = await collectWeiboRenderedSamples(tab);
+  const sampledUrls = [...instagramSamples.urls, ...weiboSamples.urls];
+  const sampledIndexes = [...instagramSamples.indexes, ...weiboSamples.layerIds];
+  const response = await requestExtraction(tab, maxIndexHint, sampledUrls, sampledIndexes);
   if (!response?.ok) {
     throw new Error(response?.error || "Extraction failed.");
   }
@@ -81,6 +101,12 @@ async function downloadOriginalsFromTab(tab) {
   }
 
   currentDownloadFolder = sanitizePathPart(response.projectName || "ProjectsA") || "ProjectsA";
+  currentDownloadReferer = normalizeHttpUrl(tab.url || "") || "https://weibo.com/";
+  await setupDownloadHeaderRules(originals.map((item) => item.url), currentDownloadReferer);
+  pendingDownloadFileNames = originals.map((item, index) => {
+    const extension = inferExtension(item.url, item.format);
+    return `${String(index + 1).padStart(3, "0")}.${extension}`;
+  });
   for (let i = 0; i < originals.length; i += 1) {
     const item = originals[i];
     const extension = inferExtension(item.url, item.format);
@@ -94,6 +120,50 @@ async function downloadOriginalsFromTab(tab) {
   }
 
   showActionStatus(String(originals.length), "#15803d");
+}
+
+async function setupDownloadHeaderRules(urls, referer = "https://weibo.com/") {
+  if (!Array.isArray(urls) || !urls.some((url) => isSinaimgUrl(url))) {
+    return;
+  }
+
+  if (!chrome.declarativeNetRequest?.updateDynamicRules) {
+    return;
+  }
+
+  await chrome.declarativeNetRequest.updateDynamicRules({
+    removeRuleIds: [WEIBO_DOWNLOAD_RULE_ID],
+    addRules: [{
+      id: WEIBO_DOWNLOAD_RULE_ID,
+      priority: 1,
+      action: {
+        type: "modifyHeaders",
+        requestHeaders: [
+          {
+            header: "Referer",
+            operation: "set",
+            value: referer,
+          },
+          {
+            header: "Origin",
+            operation: "set",
+            value: "https://weibo.com",
+          },
+        ],
+      },
+      condition: {
+        urlFilter: "||sinaimg.cn/",
+        resourceTypes: [
+          "main_frame",
+          "sub_frame",
+          "image",
+          "media",
+          "xmlhttprequest",
+          "other",
+        ],
+      },
+    }],
+  });
 }
 
 async function requestExtraction(tab, maxIndexHint = 0, sampledUrls = [], sampledIndexes = []) {
@@ -170,6 +240,79 @@ async function requestInstagramRenderedSnapshot(tabId) {
       files: ["content.js"],
     });
     const response = await sendTabMessage(tabId, { type: "mediafetch:instagram-rendered-snapshot" });
+    return response?.ok ? response.snapshot : null;
+  }
+}
+
+async function collectWeiboRenderedSamples(tab) {
+  const url = String(tab?.url || "");
+  if (!/^https:\/\/weibo\.com\//i.test(url) || !tab?.id) {
+    return { urls: [], layerIds: [] };
+  }
+
+  const hints = await requestWeiboLayerHints(tab.id);
+  const layerIds = Array.from(new Set(hints?.layerIds || [])).slice(0, 12);
+  if (!layerIds.length) {
+    return { urls: [], layerIds: [] };
+  }
+
+  const originalUrl = url;
+  const urls = new Set();
+
+  try {
+    for (const layerId of layerIds) {
+      const probeUrl = new URL(originalUrl);
+      probeUrl.searchParams.set("layerid", String(layerId));
+
+      await chrome.tabs.update(tab.id, { url: probeUrl.toString() });
+      await waitForTabComplete(tab.id, 15000);
+      await delay(1200);
+
+      const snapshot = await requestWeiboRenderedSnapshot(tab.id);
+      (snapshot?.urls || []).forEach((item) => {
+        if (item) urls.add(item);
+      });
+    }
+  } finally {
+    try {
+      await chrome.tabs.update(tab.id, { url: originalUrl });
+      await waitForTabComplete(tab.id, 15000);
+      await delay(800);
+    } catch {
+      // Final extraction will surface connection issues if restore failed.
+    }
+  }
+
+  return {
+    urls: Array.from(urls),
+    layerIds,
+  };
+}
+
+async function requestWeiboLayerHints(tabId) {
+  try {
+    const response = await sendTabMessage(tabId, { type: "mediafetch:weibo-layer-hints" });
+    return response?.ok ? response.hints : null;
+  } catch {
+    await chrome.scripting.executeScript({
+      target: { tabId },
+      files: ["content.js"],
+    });
+    const response = await sendTabMessage(tabId, { type: "mediafetch:weibo-layer-hints" });
+    return response?.ok ? response.hints : null;
+  }
+}
+
+async function requestWeiboRenderedSnapshot(tabId) {
+  try {
+    const response = await sendTabMessage(tabId, { type: "mediafetch:weibo-rendered-snapshot" });
+    return response?.ok ? response.snapshot : null;
+  } catch {
+    await chrome.scripting.executeScript({
+      target: { tabId },
+      files: ["content.js"],
+    });
+    const response = await sendTabMessage(tabId, { type: "mediafetch:weibo-rendered-snapshot" });
     return response?.ok ? response.snapshot : null;
   }
 }
@@ -343,6 +486,24 @@ function inferExtension(url, format) {
     return match ? match[1].toLowerCase() : "jpg";
   } catch {
     return "jpg";
+  }
+}
+
+function isSinaimgUrl(url) {
+  try {
+    const parsed = new URL(url);
+    return /(^|\.)sinaimg\.cn$/i.test(parsed.hostname);
+  } catch {
+    return false;
+  }
+}
+
+function normalizeHttpUrl(value) {
+  try {
+    const parsed = new URL(String(value || ""));
+    return /^https?:$/i.test(parsed.protocol) ? parsed.toString() : "";
+  } catch {
+    return "";
   }
 }
 
