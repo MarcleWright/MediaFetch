@@ -284,38 +284,48 @@
   }
 
   function inferProjectName() {
-    const instagramFolder = inferInstagramFolderName();
-    if (instagramFolder) {
-      return instagramFolder;
+    const parts = [];
+    const platform = sanitizeFolderName(inferFolderPlatformName());
+    const facts = collectProjectIdentityFacts();
+
+    if (platform) {
+      parts.push(platform);
+    }
+    if (facts.username) {
+      parts.push(sanitizeFolderName(facts.username));
+    }
+    if (facts.publishedDateCode) {
+      parts.push(sanitizeFolderName(facts.publishedDateCode));
+    }
+    if (facts.title) {
+      parts.push(sanitizeFolderName(facts.title));
     }
 
-    const weiboFolder = inferWeiboFolderName();
-    if (weiboFolder) {
-      return weiboFolder;
-    }
-
-    const candidates = [
-      document.querySelector('meta[property="og:title"]')?.content,
-      document.querySelector('meta[name="twitter:title"]')?.content,
-      document.title,
-      document.querySelector("h1")?.textContent,
-    ].filter(Boolean);
-
-    for (const value of candidates) {
-      const cleaned = sanitizeFolderName(cleanProjectTitle(value));
-      if (cleaned) return cleaned;
-    }
-
-    return "ProjectsA";
+    const folderName = sanitizeFolderName(parts.filter(Boolean).join("_"));
+    return folderName || "ProjectsA";
   }
 
   function buildProjectMetadata() {
+    const facts = collectProjectIdentityFacts();
     const metadata = {
       platform: inferPlatformName(),
       domain: location.hostname,
       projectUrl: location.href,
       normalizedUrl: inferNormalizedProjectUrl(),
       projectName: inferProjectName(),
+      title: facts.title,
+      username: facts.username,
+      authorId: facts.authorId,
+      projectId: facts.projectId,
+      publishedAt: facts.publishedAt,
+      publishedDateCode: facts.publishedDateCode,
+    };
+
+    return metadata;
+  }
+
+  function collectProjectIdentityFacts() {
+    const facts = {
       title: inferProjectTitle(),
       username: "",
       authorId: "",
@@ -326,39 +336,38 @@
 
     if (/instagram\.com$/i.test(location.hostname)) {
       const context = collectInstagramPostContext();
-      metadata.username = context?.username || "";
-      metadata.projectId = context?.postCode || extractInstagramPostCode(location.pathname) || "";
-      metadata.normalizedUrl = buildInstagramNormalizedUrl(context);
-      metadata.publishedAt = inferInstagramPublishedAt();
-      metadata.publishedDateCode = inferInstagramPostDateCode();
-      return metadata;
+      facts.username = context?.username || "";
+      facts.projectId = context?.postCode || extractInstagramPostCode(location.pathname) || "";
+      facts.publishedAt = inferInstagramPublishedAt();
+      facts.publishedDateCode = inferInstagramPostDateCode();
+      return facts;
     }
 
     if (/weibo\.com$/i.test(location.hostname)) {
-      metadata.username = inferWeiboAuthorName();
-      metadata.projectId = extractWeiboStatusId(location.href);
-      metadata.publishedAt = inferWeiboPublishedAt();
-      metadata.publishedDateCode = inferWeiboPostDateTimeCode();
-      return metadata;
+      facts.username = inferWeiboAuthorName();
+      facts.projectId = extractWeiboStatusId(location.href);
+      facts.publishedAt = inferWeiboPublishedAt();
+      facts.publishedDateCode = formatDateCodeYymmdd(facts.publishedAt) || formatDateCodeYymmdd(inferWeiboPostDateTimeCode());
+      return facts;
     }
 
     if (/behance\.net$/i.test(location.hostname)) {
-      metadata.username = extractBehanceUsername(location.pathname);
-      metadata.projectId = extractBehanceProjectId(location.pathname);
-      metadata.publishedAt = inferBehancePublishedAt();
-      metadata.publishedDateCode = formatInstagramDateCode(metadata.publishedAt);
-      return metadata;
+      facts.username = extractBehanceUsername(location.pathname);
+      facts.projectId = extractBehanceProjectId(location.pathname);
+      facts.publishedAt = inferBehancePublishedAt();
+      facts.publishedDateCode = formatDateCodeYymmdd(facts.publishedAt);
+      return facts;
     }
 
     if (isXiaohongshuHost()) {
       const authorContext = inferXiaohongshuAuthorContextV2();
-      metadata.username = authorContext?.username || "";
-      metadata.authorId = authorContext?.userId || "";
-      metadata.projectId = extractXiaohongshuNoteId(location.href);
-      return metadata;
+      facts.username = authorContext?.username || "";
+      facts.authorId = authorContext?.userId || "";
+      facts.projectId = extractXiaohongshuNoteId(location.href);
+      return facts;
     }
 
-    return metadata;
+    return facts;
   }
 
   function inferPlatformName() {
@@ -367,6 +376,11 @@
     if (/weibo\.com$/i.test(location.hostname)) return "weibo";
     if (isXiaohongshuHost()) return "xiaohongshu";
     return location.hostname.replace(/^www\./i, "") || "web";
+  }
+
+  function inferFolderPlatformName() {
+    if (isXiaohongshuHost()) return "小红书";
+    return inferPlatformName();
   }
 
   function inferNormalizedProjectUrl() {
@@ -611,17 +625,20 @@
 
   function cleanProjectTitle(value) {
     return String(value || "")
+      .replace(/[\p{Extended_Pictographic}\uFE0F\u200D]/gu, " ")
       .replace(/\s+/g, " ")
       .replace(/^[^"]+:\s*"([^"]+)".*$/i, "$1")
       .replace(/\s*[|\-]\s*Behance\b.*$/i, "")
       .replace(/\s*[|\-]\s*Adobe\b.*$/i, "")
       .replace(/\s*[|\-]\s*Instagram\b.*$/i, "")
+      .replace(/\s*[|\-]\s*(?:小红书|Xiaohongshu)\b.*$/i, "")
       .replace(/\s*[|\-]\s*Weibo\b.*$/i, "")
       .trim();
   }
 
   function sanitizeFolderName(value) {
     return String(value || "")
+      .replace(/[\p{Extended_Pictographic}\uFE0F\u200D]/gu, " ")
       .replace(/[<>:"/\\|?*\x00-\x1F]/g, "_")
       .replace(/\s+/g, "_")
       .replace(/_+/g, "_")
@@ -629,20 +646,6 @@
       .replace(/^_+|_+$/g, "")
       .trim()
       .slice(0, 64);
-  }
-
-  function inferInstagramFolderName() {
-    if (!/instagram\.com$/i.test(location.hostname)) {
-      return "";
-    }
-
-    const userName = sanitizeFolderName(inferInstagramUserName());
-    const dateCode = inferInstagramPostDateCode();
-    if (userName && dateCode) {
-      return sanitizeFolderName(`${userName}_${dateCode}`);
-    }
-
-    return userName || "Instagram";
   }
 
   function buildInstagramNormalizedUrl(context) {
@@ -1016,6 +1019,23 @@
     const month = String(date.getMonth() + 1).padStart(2, "0");
     const day = String(date.getDate()).padStart(2, "0");
     return `${year}${month}${day}`;
+  }
+
+  function formatDateCodeYymmdd(value) {
+    const raw = String(value || "").trim();
+    if (!raw) {
+      return "";
+    }
+
+    if (/^\d{6}$/.test(raw)) {
+      return raw;
+    }
+
+    if (/^\d{8,12}$/.test(raw)) {
+      return raw.slice(0, 6);
+    }
+
+    return formatInstagramDateCode(raw);
   }
 
   function inferWeiboPublishedAt() {

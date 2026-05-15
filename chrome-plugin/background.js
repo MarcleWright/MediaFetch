@@ -30,7 +30,12 @@ chrome.contextMenus.onClicked.addListener((info, tab) => {
     return;
   }
 
-  downloadOriginalsFromTab(tab).catch((error) => {
+  const linkUrl = resolveContextMenuTargetUrl(info, tab);
+  const task = linkUrl
+    ? downloadOriginalsFromLink(tab, linkUrl)
+    : downloadOriginalsFromTab(tab);
+
+  task.catch((error) => {
     console.error("MediaFetch context download failed:", error);
     showActionStatus("ERR", "#b91c1c");
   });
@@ -155,6 +160,32 @@ async function downloadOriginalsFromTab(tab) {
   await downloadTextFile(JSON.stringify(metadata, null, 2), `${currentDownloadFolder}/metadata.json`);
 
   showActionStatus(String(originals.length), "#15803d");
+}
+
+async function downloadOriginalsFromLink(sourceTab, linkUrl) {
+  const targetUrl = normalizeHttpUrl(linkUrl);
+  if (!targetUrl) {
+    throw new Error("Invalid link URL.");
+  }
+
+  const tempTab = await chrome.tabs.create({
+    url: targetUrl,
+    active: false,
+    index: typeof sourceTab.index === "number" ? sourceTab.index + 1 : undefined,
+  });
+
+  try {
+    await waitForTabComplete(tempTab.id, 20000);
+    await delay(1200);
+    const loadedTab = await chrome.tabs.get(tempTab.id);
+    await downloadOriginalsFromTab(loadedTab);
+  } finally {
+    try {
+      await chrome.tabs.remove(tempTab.id);
+    } catch {
+      // Ignore cleanup failures for temporary link tabs.
+    }
+  }
 }
 
 async function setupDownloadHeaderRules(urls, referer = "https://weibo.com/") {
@@ -705,6 +736,29 @@ function normalizeHttpUrl(value) {
   try {
     const parsed = new URL(String(value || ""));
     return /^https?:$/i.test(parsed.protocol) ? parsed.toString() : "";
+  } catch {
+    return "";
+  }
+}
+
+function resolveContextMenuTargetUrl(info, tab) {
+  const direct = normalizeHttpUrl(info?.linkUrl || "");
+  if (direct) {
+    return direct;
+  }
+
+  const rawLink = String(info?.linkUrl || "").trim();
+  if (!rawLink) {
+    return "";
+  }
+
+  try {
+    const base = normalizeHttpUrl(tab?.url || "") || normalizeHttpUrl(info?.pageUrl || "");
+    if (!base) {
+      return "";
+    }
+    const resolved = new URL(rawLink, base);
+    return /^https?:$/i.test(resolved.protocol) ? resolved.toString() : "";
   } catch {
     return "";
   }
