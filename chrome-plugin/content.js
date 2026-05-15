@@ -1,5 +1,5 @@
 (() => {
-  const CONTENT_BUILD_HASH = "1108";
+  const CONTENT_BUILD_HASH = "1120";
   let lastInstagramSamplingDebug = null;
   let lastInstagramExternalSamplingDebug = null;
   let lastInstagramOriginalMediaKeys = null;
@@ -11,6 +11,7 @@
   chrome.runtime.onMessage.addListener((message, _sender, sendResponse) => {
     if (![
       "mediafetch:extract",
+      "mediafetch:instagram-post-context",
       "mediafetch:instagram-rendered-snapshot",
       "mediafetch:weibo-layer-hints",
       "mediafetch:weibo-rendered-snapshot",
@@ -24,6 +25,19 @@
           sendResponse({
             ok: true,
             snapshot: collectInstagramRenderedSnapshot(),
+          });
+          return;
+        }
+
+        if (message?.type === "mediafetch:instagram-post-context") {
+          const context = collectInstagramPostContext();
+          if (context) {
+            const container = findInstagramPostContainer();
+            context.initialCarouselCount = container ? await extractInstagramCarouselCount(container, 0) : 0;
+          }
+          sendResponse({
+            ok: true,
+            context,
           });
           return;
         }
@@ -49,6 +63,7 @@
           ok: true,
           pageUrl: location.href,
           projectName: inferProjectName(),
+          metadata: buildProjectMetadata(),
           images: result.images,
           debug: result.debug,
         });
@@ -292,6 +307,98 @@
     }
 
     return "ProjectsA";
+  }
+
+  function buildProjectMetadata() {
+    const metadata = {
+      platform: inferPlatformName(),
+      domain: location.hostname,
+      projectUrl: location.href,
+      normalizedUrl: inferNormalizedProjectUrl(),
+      projectName: inferProjectName(),
+      title: inferProjectTitle(),
+      username: "",
+      authorId: "",
+      projectId: "",
+      publishedAt: "",
+      publishedDateCode: "",
+    };
+
+    if (/instagram\.com$/i.test(location.hostname)) {
+      const context = collectInstagramPostContext();
+      metadata.username = context?.username || "";
+      metadata.projectId = context?.postCode || extractInstagramPostCode(location.pathname) || "";
+      metadata.normalizedUrl = buildInstagramNormalizedUrl(context);
+      metadata.publishedAt = inferInstagramPublishedAt();
+      metadata.publishedDateCode = inferInstagramPostDateCode();
+      return metadata;
+    }
+
+    if (/weibo\.com$/i.test(location.hostname)) {
+      metadata.username = inferWeiboAuthorName();
+      metadata.projectId = extractWeiboStatusId(location.href);
+      metadata.publishedAt = inferWeiboPublishedAt();
+      metadata.publishedDateCode = inferWeiboPostDateTimeCode();
+      return metadata;
+    }
+
+    if (/behance\.net$/i.test(location.hostname)) {
+      metadata.username = extractBehanceUsername(location.pathname);
+      metadata.projectId = extractBehanceProjectId(location.pathname);
+      metadata.publishedAt = inferBehancePublishedAt();
+      metadata.publishedDateCode = formatInstagramDateCode(metadata.publishedAt);
+      return metadata;
+    }
+
+    if (isXiaohongshuHost()) {
+      const authorContext = inferXiaohongshuAuthorContextV2();
+      metadata.username = authorContext?.username || "";
+      metadata.authorId = authorContext?.userId || "";
+      metadata.projectId = extractXiaohongshuNoteId(location.href);
+      return metadata;
+    }
+
+    return metadata;
+  }
+
+  function inferPlatformName() {
+    if (/instagram\.com$/i.test(location.hostname)) return "instagram";
+    if (/behance\.net$/i.test(location.hostname)) return "behance";
+    if (/weibo\.com$/i.test(location.hostname)) return "weibo";
+    if (isXiaohongshuHost()) return "xiaohongshu";
+    return location.hostname.replace(/^www\./i, "") || "web";
+  }
+
+  function inferNormalizedProjectUrl() {
+    if (/instagram\.com$/i.test(location.hostname)) {
+      return buildInstagramNormalizedUrl(collectInstagramPostContext());
+    }
+
+    try {
+      const parsed = new URL(location.href);
+      parsed.hash = "";
+      return parsed.toString();
+    } catch {
+      return location.href;
+    }
+  }
+
+  function inferProjectTitle() {
+    const candidates = [
+      document.querySelector('meta[property="og:title"]')?.content,
+      document.querySelector('meta[name="twitter:title"]')?.content,
+      document.querySelector("h1")?.textContent,
+      document.title,
+    ].filter(Boolean);
+
+    for (const value of candidates) {
+      const cleaned = cleanProjectTitle(value);
+      if (cleaned) {
+        return cleaned;
+      }
+    }
+
+    return "";
   }
 
   function inferWeiboFolderName() {
@@ -538,6 +645,22 @@
     return userName || "Instagram";
   }
 
+  function buildInstagramNormalizedUrl(context) {
+    try {
+      const parsed = new URL(location.href);
+      parsed.hash = "";
+      parsed.search = "";
+      if (context?.postPath) {
+        parsed.pathname = context.postPath;
+      } else {
+        parsed.pathname = normalizeInstagramPostPath(location.pathname);
+      }
+      return parsed.toString();
+    } catch {
+      return location.href;
+    }
+  }
+
   function inferInstagramUserName() {
     const pathParts = location.pathname.split("/").filter(Boolean);
     if (pathParts.length >= 3 && /^(p|reel)$/i.test(pathParts[1])) {
@@ -553,6 +676,283 @@
     const profileLink = document.querySelector('header a[href^="/"], main a[href^="/"]')?.getAttribute("href") || "";
     const profileMatch = profileLink.match(/^\/([A-Za-z0-9._]+)\/?$/);
     return profileMatch ? profileMatch[1] : "";
+  }
+
+  function collectInstagramPostContext() {
+    if (!/instagram\.com$/i.test(location.hostname)) {
+      return null;
+    }
+
+    const postCode = extractInstagramPostCode(location.pathname);
+    const kind = extractInstagramPostKind(location.pathname);
+    if (!postCode || !kind) {
+      return null;
+    }
+
+    const pathParts = location.pathname.split("/").filter(Boolean);
+    if (pathParts.length >= 3 && /^(p|reel)$/i.test(pathParts[1])) {
+      return {
+        postCode,
+        kind,
+        username: pathParts[0],
+        postPath: `/${pathParts[0]}/${kind}/${postCode}`,
+        source: "url",
+      };
+    }
+
+    const canonical = findInstagramCanonicalPostPath(postCode);
+    if (canonical?.username) {
+      return {
+        postCode,
+        kind: canonical.kind || kind,
+        username: canonical.username,
+        postPath: canonical.path,
+        source: canonical.source,
+      };
+    }
+
+    const ownerContext = inferInstagramOwnerContext();
+    if (ownerContext?.username) {
+      return {
+        postCode,
+        kind,
+        username: ownerContext.username,
+        postPath: `/${ownerContext.username}/${kind}/${postCode}`,
+        source: ownerContext.source,
+      };
+    }
+
+    return {
+      postCode,
+      kind,
+      username: "",
+      postPath: "",
+      source: "missing",
+    };
+  }
+
+  function collectInstagramUsernameProbe() {
+    if (!/instagram\.com$/i.test(location.hostname)) {
+      return null;
+    }
+
+    const postCode = extractInstagramPostCode(location.pathname);
+    const kind = extractInstagramPostKind(location.pathname);
+    const pathParts = location.pathname.split("/").filter(Boolean);
+    const directUrlContext = pathParts.length >= 3 && /^(p|reel)$/i.test(pathParts[1])
+      ? {
+          username: pathParts[0],
+          kind: pathParts[1].toLowerCase(),
+          postCode: pathParts[2] || "",
+          matchesPostCode: !postCode || pathParts[2] === postCode,
+          postPath: `/${pathParts[0]}/${pathParts[1].toLowerCase()}/${pathParts[2] || ""}`,
+        }
+      : null;
+
+    const canonicalCandidates = collectInstagramCanonicalCandidates(postCode);
+    const canonicalMatch = canonicalCandidates.find((item) => item.matchesPostCode && item.username) || null;
+
+    const metaTitle = document.querySelector('meta[property="og:title"]')?.content || "";
+    const pageTitle = document.title || "";
+    const titleUsername = extractInstagramTitleUsername(metaTitle || pageTitle);
+
+    const headerHref = document.querySelector('main header a[href^="/"], header a[href^="/"]')?.getAttribute("href") || "";
+    const headerMatch = headerHref.match(/^\/([A-Za-z0-9._]+)\/?$/);
+    const headerUsername = headerMatch ? headerMatch[1] : "";
+    const alIosUsername = extractInstagramAlIosUsername();
+    const ownerContext = inferInstagramOwnerContext();
+
+    const jsonLd = findInstagramJsonLdPostProfile(postCode);
+
+    return {
+      locationPath: location.pathname,
+      postCode,
+      kind,
+      directUrl: directUrlContext,
+      canonicalCandidates,
+      canonicalMatch,
+      metaTitle,
+      pageTitle,
+      alIosUsername,
+      titleUsername,
+      headerHref,
+      headerUsername,
+      ownerContext,
+      jsonLd,
+      finalContext: collectInstagramPostContext(),
+    };
+  }
+
+  function collectInstagramCanonicalCandidates(postCode) {
+    const candidates = [
+      { label: "canonical", value: document.querySelector('link[rel="canonical"]')?.href || "" },
+      { label: "og:url", value: document.querySelector('meta[property="og:url"]')?.content || "" },
+      { label: "al:ios:url", value: document.querySelector('meta[property="al:ios:url"]')?.content || "" },
+    ];
+
+    return candidates.map(({ label, value }) => {
+      const result = {
+        label,
+        value,
+        username: "",
+        kind: "",
+        postCode: "",
+        matchesPostCode: false,
+        postPath: "",
+      };
+
+      try {
+        const parsed = new URL(value, location.href);
+        const match = parsed.pathname.match(/^\/([A-Za-z0-9._-]+)\/(p|reel)\/([^/]+)/i);
+        if (match) {
+          result.username = match[1];
+          result.kind = match[2].toLowerCase();
+          result.postCode = match[3];
+          result.matchesPostCode = !postCode || match[3] === postCode;
+          result.postPath = `/${match[1]}/${match[2].toLowerCase()}/${match[3]}`;
+        }
+      } catch {
+        // Ignore malformed metadata URLs.
+      }
+
+      return result;
+    });
+  }
+
+  function findInstagramCanonicalPostPath(postCode) {
+    const candidates = collectInstagramCanonicalCandidates(postCode);
+
+    for (const item of candidates) {
+      if (item.matchesPostCode && item.username) {
+        return {
+          username: item.username,
+          kind: item.kind,
+          path: `/${item.username}/${item.kind}/${postCode}`,
+          source: item.label,
+        };
+      }
+    }
+
+    return null;
+  }
+
+  function inferInstagramOwnerContext() {
+    const alIosUsername = extractInstagramAlIosUsername();
+    if (alIosUsername) {
+      return { username: alIosUsername, source: "al:ios:user" };
+    }
+
+    const metaTitle = document.querySelector('meta[property="og:title"]')?.content || document.title || "";
+    const titleUsername = extractInstagramTitleUsername(metaTitle);
+    if (titleUsername) {
+      return { username: titleUsername, source: "metaTitle" };
+    }
+
+    const headerLink = document.querySelector('main header a[href^="/"], header a[href^="/"]')?.getAttribute("href") || "";
+    const headerMatch = headerLink.match(/^\/([A-Za-z0-9._]+)\/?$/);
+    if (headerMatch) {
+      return { username: headerMatch[1], source: "header" };
+    }
+
+    return null;
+  }
+
+  function inferInstagramOwnerUserNameStrict() {
+    const context = inferInstagramOwnerContext();
+    return context?.username || "";
+  }
+
+  function extractInstagramTitleUsername(value) {
+    const title = String(value || "").trim();
+    if (!title) {
+      return "";
+    }
+
+    const directMatch = title.match(/^@?([A-Za-z0-9._]+)\s+on\s+Instagram/i);
+    if (directMatch) {
+      return directMatch[1];
+    }
+
+    const handleMatch = title.match(/\(@?([A-Za-z0-9._]+)\)/);
+    return handleMatch ? handleMatch[1] : "";
+  }
+
+  function extractInstagramAlIosUsername() {
+    const raw = document.querySelector('meta[property="al:ios:url"]')?.content || "";
+    if (!raw) {
+      return "";
+    }
+
+    const metaTitle = document.querySelector('meta[property="og:title"]')?.content || document.title || "";
+    try {
+      const parsed = new URL(raw, location.href);
+      const username = parsed.searchParams.get("username") || "";
+      if (/^[A-Za-z0-9._]+$/.test(username)) {
+        return username;
+      }
+    } catch {
+      const match = raw.match(/username=([A-Za-z0-9._]+)/i);
+      if (match) {
+        return match[1];
+      }
+    }
+
+    return extractInstagramTitleUsername(metaTitle);
+  }
+
+  function findInstagramJsonLdPostProfile(postCode) {
+    const scripts = Array.from(document.querySelectorAll('script[type="application/ld+json"]'));
+    for (const node of scripts) {
+      const raw = node.textContent || "";
+      if (!raw) {
+        continue;
+      }
+
+      try {
+        const parsed = JSON.parse(raw);
+        const entries = Array.isArray(parsed) ? parsed : [parsed];
+        for (const entry of entries) {
+          const mainEntity = entry?.mainEntityOfPage || entry?.url || "";
+          const authorUrl = entry?.author?.url || entry?.author?.mainEntityOfPage || "";
+          const candidateUrl = String(mainEntity || authorUrl || "");
+          const authorName = String(entry?.author?.alternateName || entry?.author?.identifier || entry?.author?.name || "");
+          const result = {
+            rawMainEntity: mainEntity || "",
+            rawAuthorUrl: authorUrl || "",
+            authorName,
+            username: "",
+            kind: "",
+            matchedPostCode: "",
+            matchesPostCode: false,
+            postPath: "",
+          };
+
+          if (candidateUrl) {
+            try {
+              const url = new URL(candidateUrl, location.href);
+              const match = url.pathname.match(/^\/([A-Za-z0-9._-]+)\/(p|reel)\/([^/]+)/i);
+              if (match) {
+                result.username = match[1];
+                result.kind = match[2].toLowerCase();
+                result.matchedPostCode = match[3];
+                result.matchesPostCode = !postCode || match[3] === postCode;
+                result.postPath = `/${match[1]}/${match[2].toLowerCase()}/${match[3]}`;
+              }
+            } catch {
+              // Ignore malformed JSON-LD URLs.
+            }
+          }
+
+          if (result.username || result.authorName || result.rawMainEntity || result.rawAuthorUrl) {
+            return result;
+          }
+        }
+      } catch {
+        // Ignore malformed JSON-LD blocks.
+      }
+    }
+
+    return null;
   }
 
   function inferInstagramPostDateCode() {
@@ -578,6 +978,22 @@
     return "";
   }
 
+  function inferInstagramPublishedAt() {
+    const candidates = [
+      ...Array.from(document.querySelectorAll("time[datetime]")).map((node) => node.getAttribute("datetime") || ""),
+      document.querySelector('meta[property="article:published_time"]')?.content || "",
+      document.querySelector('meta[name="date"]')?.content || "",
+    ];
+
+    const html = document.documentElement?.innerHTML || "";
+    const jsonTimeMatch = html.match(/"(?:taken_at_timestamp|date|created_at)"\s*:\s*(?:"([^"]+)"|(\d{10,13}))/i);
+    if (jsonTimeMatch) {
+      candidates.push(jsonTimeMatch[1] || jsonTimeMatch[2] || "");
+    }
+
+    return normalizePublishedAt(candidates);
+  }
+
   function formatInstagramDateCode(value) {
     const raw = String(value || "").trim();
     if (!raw) {
@@ -600,6 +1016,83 @@
     const month = String(date.getMonth() + 1).padStart(2, "0");
     const day = String(date.getDate()).padStart(2, "0");
     return `${year}${month}${day}`;
+  }
+
+  function inferWeiboPublishedAt() {
+    const candidates = [
+      ...Array.from(document.querySelectorAll("time[datetime]")).map((node) => node.getAttribute("datetime") || ""),
+      ...Array.from(document.querySelectorAll("[datetime]")).map((node) => node.getAttribute("datetime") || ""),
+      document.querySelector('meta[property="article:published_time"]')?.content || "",
+      document.querySelector('meta[name="date"]')?.content || "",
+      document.querySelector('meta[property="og:time"]')?.content || "",
+    ];
+
+    const html = document.documentElement?.innerHTML || "";
+    const patterns = [
+      /"(?:created_at|publish_time|published_at|status_time)"\s*:\s*"([^"]+)"/i,
+      /"(?:created_at|publish_time|published_at|status_time)"\s*:\s*(\d{10,13})/i,
+    ];
+    patterns.forEach((pattern) => {
+      const match = html.match(pattern);
+      if (match?.[1]) {
+        candidates.push(match[1]);
+      }
+    });
+
+    return normalizePublishedAt(candidates);
+  }
+
+  function inferBehancePublishedAt() {
+    const candidates = [
+      document.querySelector('meta[property="article:published_time"]')?.content || "",
+      document.querySelector('meta[name="date"]')?.content || "",
+      document.querySelector('meta[property="og:updated_time"]')?.content || "",
+    ];
+
+    const html = document.documentElement?.innerHTML || "";
+    const match = html.match(/"(?:published_on|published_at|created_on|created_at)"\s*:\s*"([^"]+)"/i);
+    if (match?.[1]) {
+      candidates.push(match[1]);
+    }
+
+    return normalizePublishedAt(candidates);
+  }
+
+  function normalizePublishedAt(values) {
+    for (const value of values) {
+      const raw = String(value || "").trim();
+      if (!raw) {
+        continue;
+      }
+
+      if (/^\d{10,13}$/.test(raw)) {
+        const numeric = Number(raw);
+        const date = new Date(raw.length === 13 ? numeric : numeric * 1000);
+        if (!Number.isNaN(date.getTime())) {
+          return date.toISOString();
+        }
+        continue;
+      }
+
+      const date = new Date(raw);
+      if (!Number.isNaN(date.getTime())) {
+        return date.toISOString();
+      }
+    }
+
+    return "";
+  }
+
+  function extractBehanceUsername(value) {
+    const pathname = normalizePathname(value);
+    const match = pathname.match(/^\/([^/]+)\/project\/\d+/i);
+    return match ? match[1] : "";
+  }
+
+  function extractBehanceProjectId(value) {
+    const pathname = normalizePathname(value);
+    const match = pathname.match(/\/project\/(\d+)/i);
+    return match ? match[1] : "";
   }
 
   function normalizeUrl(rawUrl) {
@@ -1060,6 +1553,61 @@
 
     const htmlEvidenceMax = extractInstagramCarouselCountFromHtml(postCode);
     maxIndex = Math.max(maxIndex, htmlEvidenceMax);
+    if (maxIndex === 0 && root) {
+      const candidateImages = collectVisualCandidates(root, {
+        minArea: 20000,
+        isAllowed: (img, candidate) =>
+          !isInsideForeignPostLink(img) &&
+          !isInsideProfileLink(img) &&
+          candidate.top <= getContainerTop(root) + 1800,
+      });
+
+      if (candidateImages.length) {
+        const firstCluster = takeLeadingCluster(candidateImages, 900);
+        const allowedLinkTypes = new Set(["none", "self-post", "other-link"]);
+        const narrowed = firstCluster.filter((candidate) => allowedLinkTypes.has(candidate.linkType));
+        const clusterCandidates = narrowed.length ? narrowed : firstCluster.slice(0, 10);
+        const visibleCount = createUrlSetFromCandidates(clusterCandidates).size || clusterCandidates.length;
+        maxIndex = Math.max(maxIndex, visibleCount > 0 ? visibleCount : 1);
+      }
+    }
+
+    if (maxIndex === 0 && root) {
+      const containerTop = getContainerTop(root);
+      const liveImages = Array.from(root.querySelectorAll("img"))
+        .filter((img) => img instanceof HTMLImageElement)
+        .map((img) => ({
+          img,
+          src: img.currentSrc || img.src || "",
+          width: Number(img.naturalWidth || img.width || 0),
+          height: Number(img.naturalHeight || img.height || 0),
+          top: Math.max(0, Math.round(img.getBoundingClientRect().top + window.scrollY)),
+        }))
+        .filter((item) =>
+          item.src &&
+          item.width >= 120 &&
+          item.height >= 120 &&
+          item.top <= containerTop + 1800 &&
+          !isInsideForeignPostLink(item.img) &&
+          !isInsideProfileLink(item.img)
+        );
+
+      if (liveImages.length) {
+        const distinctSources = new Set(
+          liveImages.map((item) => {
+            try {
+              const parsed = new URL(item.src, location.href);
+              parsed.search = "";
+              return parsed.toString();
+            } catch {
+              return item.src;
+            }
+          })
+        );
+        maxIndex = Math.max(maxIndex, distinctSources.size || 1);
+      }
+    }
+
     return Math.max(maxIndex, maxIndexHint > 0 ? maxIndexHint : 0);
   }
 
@@ -1103,6 +1651,7 @@
         articleTop: instagramContainer ? getContainerTop(instagramContainer) : null,
         containerFound: !!instagramContainer,
         containerTag: instagramContainer ? instagramContainer.tagName : null,
+        usernameProbe: collectInstagramUsernameProbe(),
         sampling: lastInstagramSamplingDebug,
         externalSampling: lastInstagramExternalSamplingDebug,
       };
@@ -1120,6 +1669,7 @@
     if (isXiaohongshuHost()) {
       debug.xiaohongshu = {
         noteId: extractXiaohongshuNoteId(location.href),
+        usernameProbe: collectXiaohongshuUsernameProbeV2(),
         original: lastXiaohongshuOriginalDebug,
       };
     }
@@ -1159,6 +1709,294 @@
 
   function isXiaohongshuHost() {
     return /(^|\.)xiaohongshu\.com$/i.test(location.hostname);
+  }
+
+  function inferXiaohongshuAuthorContext() {
+    const profileLink = findXiaohongshuPrimaryProfileLink();
+    if (profileLink?.userId) {
+      return {
+        username: profileLink.text || "",
+        userId: profileLink.userId,
+        source: "profile-link",
+        href: profileLink.href,
+      };
+    }
+
+    const scriptInfo = extractXiaohongshuAuthorFromHtml();
+    if (scriptInfo.userId || scriptInfo.username) {
+      return {
+        username: scriptInfo.username,
+        userId: scriptInfo.userId,
+        source: "html",
+      };
+    }
+
+    const metaTitle = document.querySelector('meta[property="og:title"]')?.content || "";
+    const titleMatch = metaTitle.match(/^(.{1,80}?)\s*的.*小红书/i);
+    if (titleMatch?.[1]) {
+      return {
+        username: cleanProjectTitle(titleMatch[1]),
+        userId: "",
+        source: "meta-title",
+      };
+    }
+
+    return null;
+  }
+
+  function collectXiaohongshuUsernameProbe() {
+    if (!isXiaohongshuHost()) {
+      return null;
+    }
+
+    const noteId = extractXiaohongshuNoteId(location.href);
+    const profileLink = findXiaohongshuPrimaryProfileLink();
+    const profileCandidates = collectXiaohongshuProfileCandidates();
+    const scriptInfo = extractXiaohongshuAuthorFromHtml();
+    const metaTitle = document.querySelector('meta[property="og:title"]')?.content || "";
+    const pageTitle = document.title || "";
+    const canonical = document.querySelector('link[rel="canonical"]')?.href || "";
+    const ogUrl = document.querySelector('meta[property="og:url"]')?.content || "";
+
+    return {
+      locationPath: location.pathname,
+      noteId,
+      canonical,
+      ogUrl,
+      metaTitle,
+      pageTitle,
+      profileLink,
+      profileCandidates,
+      scriptInfo,
+      finalContext: inferXiaohongshuAuthorContext(),
+    };
+  }
+
+  function findXiaohongshuPrimaryProfileLink() {
+    const root = findXiaohongshuPostContainer() || document.body;
+    const links = root ? Array.from(root.querySelectorAll('a[href]')) : [];
+    let fallback = null;
+    for (const link of links) {
+      const info = parseXiaohongshuProfileLink(link.getAttribute("href") || "");
+      if (!info.userId) {
+        continue;
+      }
+
+      const text = cleanProjectTitle(link.textContent || link.getAttribute("title") || link.getAttribute("aria-label") || "");
+      const item = {
+        href: info.href,
+        userId: info.userId,
+        text,
+      };
+      if (text && text !== "我") {
+        return item;
+      }
+      if (!fallback) {
+        fallback = item;
+      }
+    }
+
+    return fallback;
+  }
+
+  function collectXiaohongshuProfileCandidates() {
+    const links = Array.from(document.querySelectorAll('a[href]'));
+    const items = [];
+    const seen = new Set();
+
+    for (const link of links) {
+      const info = parseXiaohongshuProfileLink(link.getAttribute("href") || "");
+      if (!info.userId) {
+        continue;
+      }
+
+      const key = `${info.userId}|${info.href}`;
+      if (seen.has(key)) {
+        continue;
+      }
+      seen.add(key);
+
+      items.push({
+        href: info.href,
+        userId: info.userId,
+        text: cleanProjectTitle(link.textContent || link.getAttribute("title") || link.getAttribute("aria-label") || ""),
+      });
+      if (items.length >= 8) {
+        break;
+      }
+    }
+
+    return items;
+  }
+
+  function parseXiaohongshuProfileLink(value) {
+    const href = String(value || "").trim();
+    if (!href) {
+      return { href: "", userId: "" };
+    }
+
+    try {
+      const parsed = new URL(href, location.href);
+      const match = parsed.pathname.match(/\/user\/profile\/([A-Za-z0-9]+)/i);
+      return {
+        href: parsed.toString(),
+        userId: match ? match[1] : "",
+      };
+    } catch {
+      const match = href.match(/\/user\/profile\/([A-Za-z0-9]+)/i);
+      return {
+        href,
+        userId: match ? match[1] : "",
+      };
+    }
+  }
+
+  function extractXiaohongshuAuthorFromHtml() {
+    const html = document.documentElement?.innerHTML || "";
+    const usernamePatterns = [
+      /"nickname"\s*:\s*"([^"]{1,120})"/i,
+      /"nick_name"\s*:\s*"([^"]{1,120})"/i,
+      /"display_name"\s*:\s*"([^"]{1,120})"/i,
+      /"author"\s*:\s*\{[^{}]{0,400}?"nickname"\s*:\s*"([^"]{1,120})"/i,
+    ];
+    const userIdPatterns = [
+      /"user_id"\s*:\s*"?(\\d{5,})"?/i,
+      /"userid"\s*:\s*"?(\\d{5,})"?/i,
+      /"userId"\s*:\s*"?(\\d{5,})"?/i,
+      /\/user\/profile\/(\\d{5,})/i,
+    ];
+
+    let username = "";
+    for (const pattern of usernamePatterns) {
+      const match = html.match(pattern);
+      if (match?.[1]) {
+        username = cleanProjectTitle(match[1]);
+        if (username) {
+          break;
+        }
+      }
+    }
+
+    let userId = "";
+    for (const pattern of userIdPatterns) {
+      const match = html.match(pattern);
+      if (match?.[1]) {
+        userId = match[1];
+        break;
+      }
+    }
+
+    return { username, userId };
+  }
+
+  function inferXiaohongshuAuthorContextV2() {
+    const profileLink = findXiaohongshuPrimaryProfileLink();
+    if (profileLink?.userId && profileLink.text && profileLink.text !== "我") {
+      return {
+        username: profileLink.text || "",
+        userId: profileLink.userId,
+        source: "profile-link",
+        href: profileLink.href,
+      };
+    }
+
+    const profileCandidates = collectXiaohongshuProfileCandidates();
+    const bestCandidate = profileCandidates.find((item) => item.text && item.text !== "我") || null;
+    if (bestCandidate?.userId) {
+      return {
+        username: bestCandidate.text || "",
+        userId: bestCandidate.userId,
+        source: "profile-candidate",
+        href: bestCandidate.href,
+      };
+    }
+
+    const scriptInfo = extractXiaohongshuAuthorFromHtmlV2();
+    if (scriptInfo.userId || scriptInfo.username) {
+      return {
+        username: scriptInfo.username,
+        userId: scriptInfo.userId,
+        source: "html",
+      };
+    }
+
+    const metaTitle = document.querySelector('meta[property="og:title"]')?.content || "";
+    const titleMatch = metaTitle.match(/^(.{1,80}?)\s*(?:的|on)\s*(?:小红书|Xiaohongshu)/i);
+    if (titleMatch?.[1]) {
+      return {
+        username: cleanProjectTitle(titleMatch[1]),
+        userId: "",
+        source: "meta-title",
+      };
+    }
+
+    return null;
+  }
+
+  function collectXiaohongshuUsernameProbeV2() {
+    if (!isXiaohongshuHost()) {
+      return null;
+    }
+
+    const noteId = extractXiaohongshuNoteId(location.href);
+    const profileLink = findXiaohongshuPrimaryProfileLink();
+    const profileCandidates = collectXiaohongshuProfileCandidates();
+    const scriptInfo = extractXiaohongshuAuthorFromHtmlV2();
+    const metaTitle = document.querySelector('meta[property="og:title"]')?.content || "";
+    const pageTitle = document.title || "";
+    const canonical = document.querySelector('link[rel="canonical"]')?.href || "";
+    const ogUrl = document.querySelector('meta[property="og:url"]')?.content || "";
+
+    return {
+      locationPath: location.pathname,
+      noteId,
+      canonical,
+      ogUrl,
+      metaTitle,
+      pageTitle,
+      profileLink,
+      profileCandidates,
+      scriptInfo,
+      finalContext: inferXiaohongshuAuthorContextV2(),
+    };
+  }
+
+  function extractXiaohongshuAuthorFromHtmlV2() {
+    const html = document.documentElement?.innerHTML || "";
+    const usernamePatterns = [
+      /"nickname"\s*:\s*"([^"]{1,120})"/i,
+      /"nick_name"\s*:\s*"([^"]{1,120})"/i,
+      /"display_name"\s*:\s*"([^"]{1,120})"/i,
+      /"author"\s*:\s*\{[^{}]{0,400}?"nickname"\s*:\s*"([^"]{1,120})"/i,
+    ];
+    const userIdPatterns = [
+      /"user_id"\s*:\s*"?(?:\\u003c)?([A-Za-z0-9]{6,})"?/i,
+      /"userid"\s*:\s*"?(?:\\u003c)?([A-Za-z0-9]{6,})"?/i,
+      /"userId"\s*:\s*"?(?:\\u003c)?([A-Za-z0-9]{6,})"?/i,
+      /\/user\/profile\/([A-Za-z0-9]{6,})/i,
+    ];
+
+    let username = "";
+    for (const pattern of usernamePatterns) {
+      const match = html.match(pattern);
+      if (match?.[1]) {
+        username = cleanProjectTitle(match[1]);
+        if (username) {
+          break;
+        }
+      }
+    }
+
+    let userId = "";
+    for (const pattern of userIdPatterns) {
+      const match = html.match(pattern);
+      if (match?.[1]) {
+        userId = match[1];
+        break;
+      }
+    }
+
+    return { username, userId };
   }
 
   function findXiaohongshuPostContainer() {
@@ -1392,6 +2230,12 @@
     return match ? match[1] : "";
   }
 
+  function extractInstagramPostKind(value) {
+    const pathname = normalizePathname(value);
+    const match = pathname.match(/\/(?:[A-Za-z0-9._-]+\/)?(p|reel)\/[^/]+/i);
+    return match ? match[1].toLowerCase() : "";
+  }
+
   function normalizeInstagramPostPath(value) {
     const pathname = normalizePathname(value);
     const match = pathname.match(/\/(?:[A-Za-z0-9._-]+\/)?(p|reel)\/([^/]+)/i);
@@ -1465,10 +2309,6 @@
   }
 
   function buildInstagramProbeIndexes(maxIndex) {
-    if (maxIndex > 0 && maxIndex <= 4) {
-      return [maxIndex];
-    }
-
     const indexes = new Set();
     const groups = Math.floor(maxIndex / 4);
 
@@ -1479,10 +2319,10 @@
       }
     }
 
-    indexes.add(maxIndex);
-
-    if (maxIndex >= 1 && indexes.size === 1) {
-      indexes.add(1);
+    if (maxIndex > 0 && indexes.size === 0) {
+      indexes.add(maxIndex);
+    } else if (maxIndex > 0 && maxIndex % 4 !== 0) {
+      indexes.add(maxIndex);
     }
 
     return Array.from(indexes).sort((a, b) => a - b);
@@ -1490,7 +2330,33 @@
 
   function getInstagramCurrentPostPath(value) {
     const pathname = normalizePathname(value);
-    return /^\/(?:[A-Za-z0-9._-]+\/)?(?:p|reel)\/[^/]+$/i.test(pathname) ? pathname : "";
+    const directMatch = pathname.match(/^\/([A-Za-z0-9._-]+)\/(p|reel)\/([^/]+)$/i);
+    if (directMatch) {
+      return `/${directMatch[1]}/${directMatch[2].toLowerCase()}/${directMatch[3]}`;
+    }
+
+    const shortMatch = pathname.match(/^\/(p|reel)\/([^/]+)$/i);
+    if (!shortMatch) {
+      return "";
+    }
+
+    const context = collectInstagramPostContext();
+    return isTrustedInstagramPostContext(context) ? context.postPath : "";
+  }
+
+  function isTrustedInstagramPostContext(context) {
+    if (!context?.postPath || !context?.username) {
+      return false;
+    }
+
+    return [
+      "url",
+      "canonical",
+      "og:url",
+      "al:ios:user",
+      "metaTitle",
+      "header",
+    ].includes(context.source);
   }
 
   function collectInstagramUrlsFromHtml(html, urls, postCode = "") {

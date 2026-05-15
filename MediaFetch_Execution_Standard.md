@@ -44,6 +44,45 @@ Each extraction flow should follow this order:
 8. Present sorted results with originals first.
 9. Download only selected items.
 
+## Download Metadata
+
+Each download folder should include a `metadata.json` file.
+
+Purpose:
+
+- preserve a stable link back to the source project or post
+- support future duplicate detection by project identity
+- record download facts without mixing in temporary debug state
+
+`metadata.json` should contain project facts and download facts only.
+
+Recommended fields:
+
+- `platform`
+- `domain`
+- `projectUrl`
+- `normalizedUrl`
+- `projectName`
+- `title`
+- `username`
+- `authorId`
+- `projectId`
+- `publishedAt`
+- `publishedDateCode`
+- `folderName`
+- `downloadedAt`
+- `imageCount`
+- `originalCount`
+- `pluginVersion`
+
+Rules:
+
+- do not store popup debug output in `metadata.json`
+- do not store transient probe state such as sample indexes or temporary navigation paths
+- `projectId` should be the platform-level content id when available
+- `authorId` should be stored when the platform exposes a stable author identifier
+- `normalizedUrl` should remove unstable query noise and point back to the canonical project or post when possible
+
 ## Generic Rules
 
 ### Title Candidate Priority
@@ -560,6 +599,29 @@ Chrome-plugin Xiaohongshu extraction should:
 4. Exclude profile-linked images and obvious utility assets from the Xiaohongshu `Original` set.
 5. Use the whitelist only for `Original` labeling; do not hide other extracted images.
 
+#### Author Extraction
+
+When Xiaohongshu author identity is needed for folder naming or `metadata.json`, use this priority:
+
+1. current note author profile link inside the note page
+2. profile-link candidates on the page with visible author text
+3. page HTML fields such as `nickname`, `nick_name`, `display_name`, and stable `userId`
+4. fallback title parsing only when the page does not expose a better author source
+
+Rules:
+
+- prefer the current note author's profile link over comment authors or recommendation users
+- prefer candidates with visible author text over blank-text links
+- reject self-entry text such as `我`
+- Xiaohongshu `userId` may be alphanumeric, not digits-only
+- HTML-extracted author fields should be treated as fallback because they may point to a non-owner user block
+
+Validated note-page behavior:
+
+- `PATAC DESIGN` can be recovered reliably from profile-link candidates on the note page
+- the matching author profile id can be an alphanumeric value such as `657603f2000000002002e712`
+- comment users and unrelated HTML user blocks must not outrank the note author's profile link
+
 ### Generic Portfolio or Article Sites
 
 #### Goal
@@ -763,3 +825,8 @@ When a domain rule changes, update this document with:
 - updated Chrome-plugin content build to `contentBuildHash: 1108`
   - Weibo folder naming now uses `author_yymmddhhmm` with fallback to author, then status id
   - Xiaohongshu now keeps broad extraction but uses a note-content whitelist for `Original` labeling
+- updated Chrome-plugin download metadata support and Xiaohongshu author extraction
+  - each download folder now writes a `metadata.json` file with project facts and download facts
+  - `metadata.json` excludes debug-only fields and other temporary extraction diagnostics
+  - Xiaohongshu metadata now uses note-author identity instead of unrelated HTML user blocks
+  - Xiaohongshu author extraction prefers current note profile links and supports alphanumeric author ids

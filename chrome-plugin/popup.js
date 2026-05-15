@@ -1,6 +1,7 @@
 const state = {
   images: [],
   projectName: "ProjectsA",
+  metadata: null,
   folderTouched: false,
 };
 
@@ -91,9 +92,31 @@ async function extractFromCurrentTab() {
       version: "0.1.4",
     });
 
-    const maxIndexHint = await probeInstagramMaxIndex(tab);
-    const instagramSamples = await collectInstagramRenderedSamples(tab, maxIndexHint);
-    const weiboSamples = await collectWeiboRenderedSamples(tab);
+    const instagramNav = await resolveInstagramNavigationContext(tab);
+    let maxIndexHint = 0;
+    let probeError = "";
+    try {
+      maxIndexHint = await probeInstagramMaxIndex(tab, instagramNav);
+    } catch (error) {
+      probeError = error instanceof Error ? error.message : String(error);
+    }
+
+    let instagramSamples = { urls: [], indexes: [] };
+    let instagramSamplingError = "";
+    try {
+      instagramSamples = await collectInstagramRenderedSamples(tab, instagramNav.resolvedPostPath, maxIndexHint);
+    } catch (error) {
+      instagramSamplingError = error instanceof Error ? error.message : String(error);
+    }
+
+    let weiboSamples = { urls: [], layerIds: [] };
+    let weiboSamplingError = "";
+    try {
+      weiboSamples = await collectWeiboRenderedSamples(tab);
+    } catch (error) {
+      weiboSamplingError = error instanceof Error ? error.message : String(error);
+    }
+
     const sampledUrls = [...instagramSamples.urls, ...weiboSamples.urls];
     const sampledIndexes = [...instagramSamples.indexes, ...weiboSamples.layerIds];
     const response = await requestExtraction(tab, maxIndexHint, sampledUrls, sampledIndexes);
@@ -106,7 +129,23 @@ async function extractFromCurrentTab() {
       selected: false,
     }));
     state.projectName = response.projectName || "ProjectsA";
-    renderDebugInfo(response.debug || null);
+    state.metadata = response.metadata || null;
+    const debug = response.debug || {};
+    debug.client = {
+      version: "0.1.4",
+      probeError,
+      instagramSamplingError,
+      weiboSamplingError,
+      instagramResolvedPostPath: instagramNav.resolvedPostPath || "",
+      instagramInitialCarouselCount: instagramNav.initialCarouselCount || 0,
+      instagramContextSource: instagramNav.source || "",
+      maxIndexHint,
+      instagramSampleIndexes: instagramSamples.indexes || [],
+      instagramSampledUrlCount: instagramSamples.urls?.length || 0,
+      weiboSampleLayerIds: weiboSamples.layerIds || [],
+      weiboSampledUrlCount: weiboSamples.urls?.length || 0,
+    };
+    renderDebugInfo(debug);
 
     if (!state.folderTouched && !folderNameInput.value.trim()) {
       folderNameInput.value = state.projectName;
@@ -148,14 +187,13 @@ async function requestExtraction(tab, maxIndexHint = 0, sampledUrls = [], sample
   }
 }
 
-async function collectInstagramRenderedSamples(tab, maxIndexHint = 0) {
+async function collectInstagramRenderedSamples(tab, resolvedPostPath = "", maxIndexHint = 0) {
   const url = String(tab?.url || "");
   if (!maxIndexHint || !/https:\/\/www\.instagram\.com\//i.test(url)) {
     return { urls: [], indexes: [] };
   }
 
-  const normalizedPath = normalizeInstagramRenderedSamplePath(url);
-  if (!normalizedPath) {
+  if (!resolvedPostPath || maxIndexHint <= 1) {
     return { urls: [], indexes: [] };
   }
 
@@ -165,13 +203,14 @@ async function collectInstagramRenderedSamples(tab, maxIndexHint = 0) {
   }
 
   const originalUrl = url;
+  const restoreUrl = buildInstagramStableReturnUrl(originalUrl, resolvedPostPath);
   const indexes = buildInstagramProbeIndexes(maxIndexHint);
   const urls = new Set();
 
   try {
     for (const index of indexes) {
       const probeUrl = new URL(originalUrl);
-      probeUrl.pathname = normalizedPath;
+      probeUrl.pathname = resolvedPostPath;
       probeUrl.search = "";
       probeUrl.searchParams.set("img_index", String(index));
 
@@ -188,7 +227,7 @@ async function collectInstagramRenderedSamples(tab, maxIndexHint = 0) {
     // Keep best-effort samples; final extraction still has DOM and fetch fallbacks.
   } finally {
     try {
-      await chrome.tabs.update(tabId, { url: originalUrl });
+      await chrome.tabs.update(tabId, { url: restoreUrl });
       await waitForTabComplete(tabId, 15000);
       await delay(800);
     } catch {
@@ -291,34 +330,49 @@ async function requestWeiboRenderedSnapshot(tab) {
   }
 }
 
-async function probeInstagramMaxIndex(tab) {
+async function probeInstagramMaxIndex(tab, instagramNav = null) {
   const url = String(tab?.url || "");
   if (!/https:\/\/www\.instagram\.com\//i.test(url)) {
     return 0;
   }
 
-  const normalized = normalizeInstagramProbeUrl(url);
+  const nav = instagramNav || await resolveInstagramNavigationContext(tab);
+  if (nav.initialCarouselCount === 1) {
+    return 1;
+  }
+
+  const normalized = await normalizeInstagramProbeUrl(tab, nav.resolvedPostPath);
   if (!normalized) {
     return 0;
   }
 
+  const tabId = tab?.id || 0;
+  const originalUrl = String(tab.url || "");
+  const restoreUrl = buildInstagramStableReturnUrl(originalUrl, nav.resolvedPostPath);
+  let navigated = false;
   try {
-    const tabId = tab?.id || 0;
     if (!tabId) {
       return 0;
     }
 
-    const originalUrl = String(tab.url || "");
     await chrome.tabs.update(tabId, { url: normalized });
+    navigated = true;
     await waitForTabComplete(tabId, 15000);
     const finalUrl = await waitForInstagramProbeUrl(tabId, 20, 10000);
     const finalParsed = new URL(finalUrl);
     const value = Number.parseInt(finalParsed.searchParams.get("img_index") || "", 10);
-    await chrome.tabs.update(tabId, { url: originalUrl });
-    await waitForTabComplete(tabId, 15000);
     return Number.isFinite(value) && value > 0 ? value : 0;
   } catch {
     return 0;
+  } finally {
+    if (navigated && restoreUrl) {
+      try {
+        await chrome.tabs.update(tabId, { url: restoreUrl });
+        await waitForTabComplete(tabId, 15000);
+      } catch {
+        // Ignore restore failures; the next extraction step will surface tab errors.
+      }
+    }
   }
 }
 
@@ -344,17 +398,144 @@ async function waitForInstagramProbeUrl(tabId, requestedIndex, timeoutMs) {
   return lastUrl;
 }
 
-function normalizeInstagramProbeUrl(rawUrl) {
+async function normalizeInstagramProbeUrl(tab, resolvedPostPath = "") {
   try {
+    const rawUrl = String(tab?.url || "");
     const parsed = new URL(rawUrl);
     if (!/instagram\.com$/i.test(parsed.hostname)) {
       return "";
     }
+    const postPath = resolvedPostPath || await resolveInstagramPostPath(tab);
+    if (!postPath) {
+      throw new Error("Instagram max index probe failed: missing username in post URL.");
+    }
+    parsed.pathname = postPath;
     parsed.search = "";
     parsed.searchParams.set("img_index", "20");
     return parsed.toString();
   } catch {
-    return "";
+    throw new Error("Instagram max index probe failed: missing username in post URL.");
+  }
+}
+
+async function resolveInstagramPostPath(tab) {
+  const nav = await resolveInstagramNavigationContext(tab);
+  if (nav.resolvedPostPath) {
+    return nav.resolvedPostPath;
+  }
+
+  throw new Error("Instagram max index probe failed: missing username in post URL.");
+}
+
+async function resolveInstagramNavigationContext(tab) {
+  const rawUrl = String(tab?.url || "");
+  let parsed = null;
+  try {
+    parsed = new URL(rawUrl);
+  } catch {
+    return {
+      resolvedPostPath: "",
+      initialCarouselCount: 0,
+      source: "",
+      context: null,
+    };
+  }
+
+  if (!/instagram\.com$/i.test(parsed.hostname)) {
+    return {
+      resolvedPostPath: "",
+      initialCarouselCount: 0,
+      source: "",
+      context: null,
+    };
+  }
+
+  const path = parsed.pathname.replace(/\/+$/, "");
+  const directMatch = path.match(/^\/([A-Za-z0-9._-]+)\/(p|reel)\/([^/]+)$/i);
+
+  let context = null;
+  try {
+    context = await requestInstagramPostContext(tab);
+  } catch {
+    context = null;
+  }
+
+  if (directMatch) {
+    return {
+      resolvedPostPath: `/${directMatch[1]}/${directMatch[2].toLowerCase()}/${directMatch[3]}`,
+      initialCarouselCount: Number(context?.initialCarouselCount || 0),
+      source: "url",
+      context,
+    };
+  }
+
+  const shortMatch = path.match(/^\/(p|reel)\/([^/]+)$/i);
+  if (!shortMatch) {
+    return {
+      resolvedPostPath: "",
+      initialCarouselCount: Number(context?.initialCarouselCount || 0),
+      source: context?.source || "",
+      context,
+    };
+  }
+
+  if (isTrustedInstagramPostContext(context)) {
+    return {
+      resolvedPostPath: context.postPath,
+      initialCarouselCount: Number(context?.initialCarouselCount || 0),
+      source: context.source || "",
+      context,
+    };
+  }
+
+  return {
+    resolvedPostPath: "",
+    initialCarouselCount: Number(context?.initialCarouselCount || 0),
+    source: context?.source || "",
+    context,
+  };
+}
+
+function isTrustedInstagramPostContext(context) {
+  if (!context?.postPath || !context?.username) {
+    return false;
+  }
+
+  return [
+    "url",
+    "canonical",
+    "og:url",
+    "al:ios:user",
+    "metaTitle",
+    "header",
+  ].includes(context.source);
+}
+
+function buildInstagramStableReturnUrl(rawUrl, resolvedPostPath = "") {
+  try {
+    const parsed = new URL(String(rawUrl || ""));
+    if (!/instagram\.com$/i.test(parsed.hostname) || !resolvedPostPath) {
+      return parsed.toString();
+    }
+
+    parsed.pathname = resolvedPostPath;
+    return parsed.toString();
+  } catch {
+    return String(rawUrl || "");
+  }
+}
+
+async function requestInstagramPostContext(tab) {
+  try {
+    const response = await chrome.tabs.sendMessage(tab.id, { type: "mediafetch:instagram-post-context" });
+    return response?.ok ? response.context : null;
+  } catch {
+    await chrome.scripting.executeScript({
+      target: { tabId: tab.id },
+      files: ["content.js"],
+    });
+    const response = await chrome.tabs.sendMessage(tab.id, { type: "mediafetch:instagram-post-context" });
+    return response?.ok ? response.context : null;
   }
 }
 
@@ -372,10 +553,6 @@ function normalizeInstagramRenderedSamplePath(rawUrl) {
 }
 
 function buildInstagramProbeIndexes(maxIndex) {
-  if (maxIndex > 0 && maxIndex <= 4) {
-    return [maxIndex];
-  }
-
   const indexes = new Set();
   const groups = Math.floor(maxIndex / 4);
 
@@ -386,10 +563,10 @@ function buildInstagramProbeIndexes(maxIndex) {
     }
   }
 
-  indexes.add(maxIndex);
-
-  if (maxIndex >= 1 && indexes.size === 1) {
-    indexes.add(1);
+  if (maxIndex > 0 && indexes.size === 0) {
+    indexes.add(maxIndex);
+  } else if (maxIndex > 0 && maxIndex % 4 !== 0) {
+    indexes.add(maxIndex);
   }
 
   return Array.from(indexes).sort((a, b) => a - b);
@@ -458,6 +635,17 @@ async function downloadSelected() {
         });
       }
     }
+
+    const metadata = buildDownloadMetadata(state.metadata, {
+      folderName: folder,
+      imageCount: selected.length,
+      originalCount: selected.filter((item) => item.isOriginal).length,
+      pluginVersion: "0.1.4",
+    });
+    await downloadTextFile(
+      JSON.stringify(metadata, null, 2),
+      `${folder}/metadata.json`
+    );
   } catch (error) {
     const message = error instanceof Error ? error.message : String(error);
     setStatus(`Download failed: ${message}`, true);
@@ -545,6 +733,52 @@ async function downloadFetchedBlob(url, filename) {
   } finally {
     setTimeout(() => URL.revokeObjectURL(objectUrl), 15000);
   }
+}
+
+async function downloadTextFile(text, filename) {
+  await queueMetadataPath(filename);
+  const blob = new Blob([text], { type: "application/json;charset=utf-8" });
+  const objectUrl = URL.createObjectURL(blob);
+  try {
+    await downloadToChrome({
+      url: objectUrl,
+      filename: "__mediafetch_metadata__.json",
+      saveAs: false,
+      conflictAction: "overwrite",
+    });
+  } finally {
+    setTimeout(() => URL.revokeObjectURL(objectUrl), 15000);
+  }
+}
+
+function queueMetadataPath(path) {
+  return new Promise((resolve, reject) => {
+    chrome.runtime.sendMessage({ type: "mediafetch:queue-metadata-path", path }, (response) => {
+      const error = chrome.runtime.lastError;
+      if (error) {
+        reject(new Error(error.message));
+        return;
+      }
+
+      if (!response?.ok) {
+        reject(new Error(response?.error || "Failed to queue metadata path."));
+        return;
+      }
+
+      resolve();
+    });
+  });
+}
+
+function buildDownloadMetadata(baseMetadata, options) {
+  return {
+    ...(baseMetadata || {}),
+    folderName: options.folderName,
+    downloadedAt: new Date().toISOString(),
+    imageCount: Number(options.imageCount || 0),
+    originalCount: Number(options.originalCount || 0),
+    pluginVersion: options.pluginVersion || "0.1.4",
+  };
 }
 
 function isSinaimgUrl(url) {
