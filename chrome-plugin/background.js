@@ -2,6 +2,9 @@ let currentDownloadFolder = "";
 let pendingDownloadFileNames = [];
 let pendingMetadataPaths = [];
 let currentDownloadReferer = "";
+let downloadTaskCounter = 0;
+let activeDownloadTask = null;
+const downloadTaskQueue = [];
 const DOWNLOAD_ORIGINALS_MENU_ID = "mediafetch-download-originals";
 const WEIBO_DOWNLOAD_RULE_ID = 901001;
 const METADATA_SENTINEL_FILE_NAME = "__mediafetch_metadata__.json";
@@ -31,14 +34,17 @@ chrome.contextMenus.onClicked.addListener((info, tab) => {
   }
 
   const linkUrl = resolveContextMenuTargetUrl(info, tab);
-  const task = linkUrl
-    ? downloadOriginalsFromLink(tab, linkUrl)
-    : downloadOriginalsFromTab(tab);
-
-  task.catch((error) => {
-    console.error("MediaFetch context download failed:", error);
-    showActionStatus("ERR", "#b91c1c");
-  });
+  enqueueDownloadTask(linkUrl
+    ? {
+      type: "context-link",
+      sourceTabId: tab.id,
+      sourceTabIndex: typeof tab.index === "number" ? tab.index : null,
+      linkUrl,
+    }
+    : {
+      type: "context-tab",
+      tabId: tab.id,
+    });
 });
 
 chrome.runtime.onMessage.addListener((message, _sender, sendResponse) => {
@@ -72,6 +78,23 @@ chrome.runtime.onMessage.addListener((message, _sender, sendResponse) => {
     }
 
     sendResponse({ ok: false, error: "Invalid metadata path." });
+    return;
+  }
+
+  if (message?.type === "mediafetch:enqueue-selection-download") {
+    const taskId = enqueueDownloadTask({
+      type: "selection",
+      folder: message.folder || "",
+      images: Array.isArray(message.images) ? message.images : [],
+      metadata: message.metadata || null,
+      pageUrl: message.pageUrl || "",
+    });
+    sendResponse({
+      ok: true,
+      taskId,
+      queuedAhead: Math.max(0, downloadTaskQueue.length - 1),
+      active: !!activeDownloadTask,
+    });
     return;
   }
 });
@@ -115,7 +138,6 @@ chrome.downloads.onDeterminingFilename.addListener((downloadItem, suggest) => {
 });
 
 async function downloadOriginalsFromTab(tab) {
-  showActionStatus("...", "#2563eb");
   const instagramNav = await resolveInstagramNavigationContext(tab);
   const maxIndexHint = await probeInstagramMaxIndex(tab, instagramNav);
   const instagramSamples = await collectInstagramRenderedSamples(tab, instagramNav.resolvedPostPath, maxIndexHint);
@@ -132,34 +154,18 @@ async function downloadOriginalsFromTab(tab) {
     throw new Error("No Original images found.");
   }
 
-  currentDownloadFolder = sanitizePathPart(response.projectName || "ProjectsA") || "ProjectsA";
-  currentDownloadReferer = normalizeHttpUrl(tab.url || "") || "https://weibo.com/";
-  await setupDownloadHeaderRules(originals.map((item) => item.url), currentDownloadReferer);
-  pendingDownloadFileNames = originals.map((item, index) => {
-    const extension = inferExtension(item.url, item.format);
-    return `${String(index + 1).padStart(3, "0")}.${extension}`;
-  });
-  for (let i = 0; i < originals.length; i += 1) {
-    const item = originals[i];
-    const extension = inferExtension(item.url, item.format);
-    const fileName = `${String(i + 1).padStart(3, "0")}.${extension}`;
-    await downloadToChrome({
-      url: item.url,
-      filename: fileName,
-      saveAs: false,
-      conflictAction: "uniquify",
-    });
-  }
-
+  const folder = sanitizePathPart(response.projectName || "ProjectsA") || "ProjectsA";
   const metadata = buildDownloadMetadata(response.metadata, {
-    folderName: currentDownloadFolder,
+    folderName: folder,
     imageCount: originals.length,
     originalCount: originals.length,
     pluginVersion: "0.1.4",
   });
-  await downloadTextFile(JSON.stringify(metadata, null, 2), `${currentDownloadFolder}/metadata.json`);
-
-  showActionStatus(String(originals.length), "#15803d");
+  await downloadImageBatch(originals, {
+    folder,
+    metadata,
+    pageUrl: tab.url || "",
+  });
 }
 
 async function downloadOriginalsFromLink(sourceTab, linkUrl) {
@@ -184,6 +190,100 @@ async function downloadOriginalsFromLink(sourceTab, linkUrl) {
       await chrome.tabs.remove(tempTab.id);
     } catch {
       // Ignore cleanup failures for temporary link tabs.
+    }
+  }
+}
+
+async function downloadSelectionTask(task) {
+  const selected = Array.isArray(task.images) ? task.images.filter((item) => item?.url) : [];
+  if (!selected.length) {
+    throw new Error("No images selected.");
+  }
+
+  const folder = sanitizePathPart(task.folder || "ProjectsA") || "ProjectsA";
+  const originalCount = selected.filter((item) => item?.isOriginal).length;
+  const metadata = buildDownloadMetadata(task.metadata, {
+    folderName: folder,
+    imageCount: selected.length,
+    originalCount,
+    pluginVersion: "0.1.4",
+  });
+  await downloadImageBatch(selected, {
+    folder,
+    metadata,
+    pageUrl: task.pageUrl || "",
+  });
+}
+
+async function downloadImageBatch(images, options) {
+  const folder = sanitizePathPart(options.folder || "ProjectsA") || "ProjectsA";
+  const referer = normalizeHttpUrl(options.pageUrl || "") || "https://weibo.com/";
+  currentDownloadFolder = folder;
+  currentDownloadReferer = referer;
+  await setupDownloadHeaderRules(images.map((item) => item.url), referer);
+  pendingDownloadFileNames = images.map((item, index) => {
+    const extension = inferExtension(item.url, item.format);
+    return `${String(index + 1).padStart(3, "0")}.${extension}`;
+  });
+
+  for (let i = 0; i < images.length; i += 1) {
+    const item = images[i];
+    const extension = inferExtension(item.url, item.format);
+    const fileName = `${String(i + 1).padStart(3, "0")}.${extension}`;
+    await downloadToChrome({
+      url: item.url,
+      filename: fileName,
+      saveAs: false,
+      conflictAction: "uniquify",
+    });
+  }
+
+  await downloadTextFile(JSON.stringify(options.metadata || {}, null, 2), `${folder}/metadata.json`);
+}
+
+function enqueueDownloadTask(task) {
+  downloadTaskCounter += 1;
+  const queuedTask = {
+    id: downloadTaskCounter,
+    ...task,
+  };
+  downloadTaskQueue.push(queuedTask);
+  updateQueueBadge();
+  void processDownloadQueue();
+  return queuedTask.id;
+}
+
+async function processDownloadQueue() {
+  if (activeDownloadTask || !downloadTaskQueue.length) {
+    updateQueueBadge();
+    return;
+  }
+
+  activeDownloadTask = downloadTaskQueue.shift();
+  updateQueueBadge();
+
+  try {
+    if (activeDownloadTask.type === "context-link") {
+      const sourceTab = {
+        id: activeDownloadTask.sourceTabId,
+        index: activeDownloadTask.sourceTabIndex,
+      };
+      await downloadOriginalsFromLink(sourceTab, activeDownloadTask.linkUrl);
+    } else if (activeDownloadTask.type === "selection") {
+      await downloadSelectionTask(activeDownloadTask);
+    } else {
+      const tab = await chrome.tabs.get(activeDownloadTask.tabId);
+      await downloadOriginalsFromTab(tab);
+    }
+    showActionStatus("OK", "#15803d");
+  } catch (error) {
+    console.error("MediaFetch queued download failed:", error);
+    showActionStatus("ERR", "#b91c1c");
+  } finally {
+    activeDownloadTask = null;
+    updateQueueBadge();
+    if (downloadTaskQueue.length) {
+      void processDownloadQueue();
     }
   }
 }
@@ -768,8 +868,25 @@ function showActionStatus(text, color) {
   chrome.action.setBadgeText({ text });
   chrome.action.setBadgeBackgroundColor({ color });
   setTimeout(() => {
-    chrome.action.setBadgeText({ text: "" });
+    updateQueueBadge();
   }, 3000);
+}
+
+function updateQueueBadge() {
+  if (activeDownloadTask) {
+    const queuedCount = downloadTaskQueue.length;
+    chrome.action.setBadgeText({ text: queuedCount > 0 ? `>${queuedCount}` : "RUN" });
+    chrome.action.setBadgeBackgroundColor({ color: "#2563eb" });
+    return;
+  }
+
+  if (downloadTaskQueue.length > 0) {
+    chrome.action.setBadgeText({ text: String(downloadTaskQueue.length) });
+    chrome.action.setBadgeBackgroundColor({ color: "#2563eb" });
+    return;
+  }
+
+  chrome.action.setBadgeText({ text: "" });
 }
 
 function delay(ms) {

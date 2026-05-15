@@ -610,42 +610,25 @@ async function downloadSelected() {
   if (!selected.length) return;
 
   const folder = sanitizeFolderName(folderNameInput.value.trim() || state.projectName || "ProjectsA");
-  setStatus("Downloading...");
+  setStatus("Queueing download...");
 
   try {
-    const backgroundFolderEnabled = await setDownloadFolder(folder);
-    const fileNames = selected.map((item, index) => {
-      const extension = inferExtension(item.url, item.format);
-      return `${String(index + 1).padStart(3, "0")}.${extension}`;
-    });
     const [tab] = await chrome.tabs.query({ active: true, currentWindow: true });
-    await prepareDownloads(selected.map((item) => item.url), fileNames, tab?.url || "");
-
-    for (let i = 0; i < selected.length; i += 1) {
-      const item = selected[i];
-      const fileName = fileNames[i];
-      if (isSinaimgUrl(item.url)) {
-        await downloadFetchedBlob(item.url, backgroundFolderEnabled ? fileName : `${folder}/${fileName}`);
-      } else {
-        await downloadToChrome({
-          url: item.url,
-          filename: backgroundFolderEnabled ? fileName : `${folder}/${fileName}`,
-          saveAs: false,
-          conflictAction: "uniquify",
-        });
-      }
-    }
-
-    const metadata = buildDownloadMetadata(state.metadata, {
-      folderName: folder,
-      imageCount: selected.length,
-      originalCount: selected.filter((item) => item.isOriginal).length,
-      pluginVersion: "0.1.4",
+    const result = await enqueueSelectionDownload({
+      folder,
+      images: selected.map((item) => ({
+        url: item.url,
+        format: item.format,
+        isOriginal: !!item.isOriginal,
+      })),
+      metadata: state.metadata,
+      pageUrl: tab?.url || "",
     });
-    await downloadTextFile(
-      JSON.stringify(metadata, null, 2),
-      `${folder}/metadata.json`
-    );
+    const queuedAhead = Number(result?.queuedAhead || 0);
+    if (result?.active || queuedAhead > 0) {
+      setStatus(`Queued ${selected.length} image(s). ${queuedAhead} task(s) ahead.`);
+      return;
+    }
   } catch (error) {
     const message = error instanceof Error ? error.message : String(error);
     setStatus(`Download failed: ${message}`, true);
@@ -779,6 +762,25 @@ function buildDownloadMetadata(baseMetadata, options) {
     originalCount: Number(options.originalCount || 0),
     pluginVersion: options.pluginVersion || "0.1.4",
   };
+}
+
+function enqueueSelectionDownload(payload) {
+  return new Promise((resolve, reject) => {
+    chrome.runtime.sendMessage({ type: "mediafetch:enqueue-selection-download", ...payload }, (response) => {
+      const error = chrome.runtime.lastError;
+      if (error) {
+        reject(new Error(error.message));
+        return;
+      }
+
+      if (!response?.ok) {
+        reject(new Error(response?.error || "Failed to queue download."));
+        return;
+      }
+
+      resolve(response);
+    });
+  });
 }
 
 function isSinaimgUrl(url) {
