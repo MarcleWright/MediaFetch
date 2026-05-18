@@ -115,6 +115,35 @@ Cleanup should apply in this order:
 - be safe for Windows and Chrome downloads
 - avoid full-caption dumps where possible
 - be capped to 64 characters by default
+- remove emoji
+
+Current Chrome-plugin naming convention:
+
+- default pattern: `platform_username_yymmdd_title`
+- omit any segment that cannot be recovered reliably
+- use `_` only between top-level content segments
+- use `-` inside a content segment instead of `_` or spaces
+- sanitize illegal filename characters inside a segment to `-`
+- compress repeated `-` and repeated `_`
+
+Additional Behance naming rule:
+
+- Behance uses the author display name as `username` when available
+- Behance stores the stable profile slug in `authorId`
+- expected folder pattern:
+  - `behance_authorName_yymmdd_title`
+
+Current domain-specific naming overrides:
+
+- Instagram:
+  - `instagram_username_yymmdd_title`
+  - in practice, title is usually short or empty and may be omitted
+- Weibo:
+  - `weibo_username_yymmdd_hhmm`
+  - title is intentionally ignored
+- Xiaohongshu:
+  - folder prefix uses `小红书` instead of `xiaohongshu` to save space
+  - metadata `platform` remains `xiaohongshu`
 
 ### Image Candidate Sources
 
@@ -185,22 +214,34 @@ Prefer the actual project title and prefer large presentation images over thumbn
 
 Priority:
 
-1. `author_yymmddhhmm`
-2. `og:title`
-3. `document.title`
+1. `og:title`
+2. `document.title`
+3. visible project heading
 
 Cleanup rules:
 
-- author should come from the post owner, not UI labels
-- timestamp should come from page time evidence when available
-- use `yymmddhhmm`
-- if no timestamp is available, fall back to `author`
-- if author and timestamp are both unavailable, fall back to status id
+- remove trailing `| Behance` and similar site suffixes
+- keep the project title, not the author name
+- allow username and published date to be added by the unified folder naming layer
 
-Expected output examples:
+#### Author Identity
 
-- `username_2605142030`
-- `brandname_2605010915`
+Behance should separate:
+
+- readable author display name
+- stable author slug
+
+Rules:
+
+1. Use the display author name as Behance `username`.
+2. Store the stable profile slug as `authorId`.
+3. If the display author name is unavailable, fall back to the slug.
+
+Expected example:
+
+- `username`: `hyunbeen Kye`
+- `authorId`: `hb_kyea396`
+- folder name: `behance_hyunbeen_Kye_250518_NASA_LEVION`
 
 #### Image Parsing
 
@@ -238,6 +279,20 @@ If multiple Behance CDN sizes exist for the same visual, prefer:
    - `data-large-src`
 4. largest rendered width/height variant
 5. URL variant containing original-size keywords
+
+Current Chrome-plugin Behance original-selection behavior:
+
+1. Restrict candidates to large images inside `main`.
+2. Exclude obvious utility, avatar, profile, and foreign-project images.
+3. Do not truncate long case-study pages to the first visual cluster only.
+4. Normalize same-image Behance CDN variants by stable media key.
+5. For the same Behance media key, keep only the highest-ranked variant:
+   - `source`
+   - `max_3840`
+   - `max_2560`
+   - `max_1920`
+   - `fs`
+6. If the kept high-resolution URL lacks DOM width/height, inherit known dimensions from another DOM-visible variant with the same media key.
 
 Important Behance CDN rule:
 
@@ -507,24 +562,28 @@ Prefer post-related images and avoid navigation or profile assets.
 
 #### Title Parsing
 
-Priority:
+Weibo does not use a post title for folder naming.
 
-1. `author_yymmddhhmm`
-2. `og:title`
-3. `document.title`
+Folder naming priority:
 
-Cleanup rules:
+1. `weibo_username_yymmdd_hhmm`
+2. `weibo_username_yymmdd`
+3. `weibo_yymmdd_hhmm`
+4. `weibo_username`
+5. status id fallback only when necessary
 
-- author should come from the post owner, not UI labels
-- timestamp should come from page time evidence when available
-- use `yymmddhhmm`
-- if no timestamp is available, fall back to `author`
-- if author and timestamp are both unavailable, fall back to status id
+Timestamp rules:
 
-Expected output examples:
-
-- `username_2605142030`
-- `brandname_2605010915`
+- prefer time evidence from the current detail post container
+- support visible text formats such as:
+  - `5月16日 09:30`
+  - `5-16 09:30`
+  - `2026-05-16 09:30`
+  - `今天 09:30`
+  - `昨天 09:30`
+- normalize to:
+  - `publishedDateCode = yymmdd`
+  - `publishedTimeCode = hhmm`
 
 #### Image Parsing
 
@@ -725,8 +784,8 @@ Implementation notes:
 - Keep folder name and file name sanitization separate.
 - Folder names should replace illegal characters with `_`.
 - File names should also replace illegal characters with `_`.
-- The popup may persist a manually edited folder name in `chrome.storage.local`.
-- Once a user manually edits the folder name, auto-detected names must not overwrite it.
+- Manual folder edits should override the auto-detected name only for the current popup session.
+- Auto-detected names should repopulate when the popup is reopened on a different project or post.
 - The popup should send the sanitized target folder to the background service worker before starting downloads.
 - The popup should start each download with the plain sequential file name, for example `001.jpg`.
 - The background service worker should synchronously call `suggest()` in `onDeterminingFilename`.
@@ -736,6 +795,30 @@ Implementation notes:
 - If folder creation still appears to fail, check Chrome's download setting:
   - `Ask where to save each file before downloading` should be disabled.
 - This setting is also called out by Imageye because it can prevent extension-suggested subfolders from being applied consistently.
+
+### Chrome Extension Task Queue
+
+Current Chrome-plugin behavior uses a serial download queue in the background service worker.
+
+Rules:
+
+1. popup downloads and context-menu downloads must enqueue into the same queue
+2. only one download task may run at a time
+3. later tasks must wait instead of overwriting shared download state
+4. badge text may indicate running and queued task count
+
+Reason:
+
+- the current download pipeline still uses shared filename and metadata assignment state
+- serializing tasks avoids cross-task folder, filename, metadata, and referer corruption
+
+### Popup Debug Panel
+
+Current popup behavior:
+
+- debug panel is collapsed by default
+- user may expand it on demand
+- debug content generation remains unchanged
 
 ## Error Handling
 
@@ -830,3 +913,33 @@ When a domain rule changes, update this document with:
   - `metadata.json` excludes debug-only fields and other temporary extraction diagnostics
   - Xiaohongshu metadata now uses note-author identity instead of unrelated HTML user blocks
   - Xiaohongshu author extraction prefers current note profile links and supports alphanumeric author ids
+
+### 2026-05-15 to 2026-05-18
+
+- unified Chrome-plugin folder naming around `platform_username_yymmdd_title`
+  - omitted missing segments instead of inserting placeholders
+  - removed emoji during sanitization
+  - Xiaohongshu folder prefix changed to `小红书`
+- improved Instagram operational behavior
+  - preserved username-backed navigable post paths for sampling
+  - added support for right-click link-target downloads using a temporary target tab
+  - kept current-tab sampling as the active implementation while documenting worker-tab as a possible future design
+- added serial download task queue in the background service worker
+  - popup downloads and context-menu downloads now share one queue
+  - tasks execute one at a time to avoid filename, folder, metadata, and referer collisions
+- updated popup behavior
+  - debug panel now collapses by default
+  - manual folder override no longer persists globally across unrelated projects
+- refined Weibo naming and time extraction
+  - folder naming now uses `weibo_username_yymmdd_hhmm`
+  - time extraction now supports visible detail-page text such as `5-16 09:30`
+  - fixed incorrect year fallback such as `010516_0930`
+  - preserved safe Weibo downloads by fetching Sina image bodies before saving
+- refined Behance original selection for long multi-image case studies
+  - no longer restricts original candidates to the first leading cluster only
+  - deduplicates same-image Behance CDN variants by media key
+  - prefers the highest-ranked exposed variant such as `source` or `max_3840`
+  - backfills DOM dimensions onto retained high-resolution variants when possible
+- refined Behance author identity handling
+  - Behance folder naming now uses the readable display author name as `username`
+  - Behance metadata stores the stable profile slug as `authorId`

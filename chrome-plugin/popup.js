@@ -18,20 +18,13 @@ const toggleDebugBtn = document.getElementById("toggleDebugBtn");
 const debugInfoEl = document.getElementById("debugInfo");
 const copyDebugBtn = document.getElementById("copyDebugBtn");
 const resultsEl = document.getElementById("results");
-const MANUAL_FOLDER_STORAGE_KEY = "mediafetchManualFolderName";
 
 folderNameInput.addEventListener("input", () => {
   state.folderTouched = true;
-  chrome.storage.local.set({
-    [MANUAL_FOLDER_STORAGE_KEY]: folderNameInput.value,
-  });
 });
 
 folderNameInput.addEventListener("change", () => {
   state.folderTouched = true;
-  chrome.storage.local.set({
-    [MANUAL_FOLDER_STORAGE_KEY]: folderNameInput.value,
-  });
 });
 
 refreshBtn.addEventListener("click", extractFromCurrentTab);
@@ -60,21 +53,7 @@ toggleDebugBtn.addEventListener("click", toggleDebugSection);
 initializePopup();
 
 async function initializePopup() {
-  await restoreManualFolderName();
   extractFromCurrentTab();
-}
-
-async function restoreManualFolderName() {
-  try {
-    const stored = await chrome.storage.local.get(MANUAL_FOLDER_STORAGE_KEY);
-    const manualFolderName = String(stored?.[MANUAL_FOLDER_STORAGE_KEY] || "");
-    if (manualFolderName.trim()) {
-      folderNameInput.value = manualFolderName;
-      state.folderTouched = true;
-    }
-  } catch {
-    // Keep automatic folder naming if storage is unavailable.
-  }
 }
 
 async function extractFromCurrentTab() {
@@ -131,6 +110,7 @@ async function extractFromCurrentTab() {
       ...item,
       selected: false,
     }));
+    const previousProjectName = state.projectName || "";
     state.projectName = response.projectName || "ProjectsA";
     state.metadata = response.metadata || null;
     const debug = response.debug || {};
@@ -150,8 +130,10 @@ async function extractFromCurrentTab() {
     };
     renderDebugInfo(debug);
 
-    if (!state.folderTouched && !folderNameInput.value.trim()) {
+    const currentFolderInput = folderNameInput.value.trim();
+    if (!state.folderTouched || !currentFolderInput || currentFolderInput === previousProjectName) {
       folderNameInput.value = state.projectName;
+      state.folderTouched = false;
     }
 
     setStatus(state.images.length ? `Found ${state.images.length} image(s).` : "No images found on the current page.");
@@ -884,11 +866,13 @@ async function copyDebugInfo() {
 
 function sanitizeFolderName(value) {
   return String(value || "ProjectsA")
-    .replace(/[<>:"/\\|?*\x00-\x1F]/g, "_")
-    .replace(/\s+/g, "_")
+    .replace(/[\p{Extended_Pictographic}\uFE0F\u200D]/gu, " ")
+    .replace(/[<>:"/\\|?*\x00-\x1F]/g, "-")
+    .replace(/\s+/g, "-")
+    .replace(/-+/g, "-")
     .replace(/_+/g, "_")
     .replace(/\.+$/g, "")
-    .replace(/^_+|_+$/g, "")
+    .replace(/^[-_]+|[-_]+$/g, "")
     .trim()
     .slice(0, 64) || "ProjectsA";
 }

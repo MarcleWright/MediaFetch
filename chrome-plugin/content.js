@@ -1,5 +1,5 @@
 (() => {
-  const CONTENT_BUILD_HASH = "1120";
+  const CONTENT_BUILD_HASH = "1122";
   let lastInstagramSamplingDebug = null;
   let lastInstagramExternalSamplingDebug = null;
   let lastInstagramOriginalMediaKeys = null;
@@ -7,6 +7,10 @@
   let lastXiaohongshuOriginalDebug = null;
   let lastWeiboOriginalDebug = null;
   let lastWeiboExternalSamplingDebug = null;
+  const XIAOHONGSHU_DISPLAY_NAME = "\u5c0f\u7ea2\u4e66";
+  const XIAOHONGSHU_SUFFIX_PATTERN = /\s*[|\-]\s*(?:\u5c0f\u7ea2\u4e66|Xiaohongshu)\b.*$/i;
+  const XIAOHONGSHU_TITLE_PATTERN = /^(.{1,80}?)\s*(?:\u7684|on)\s*(?:\u5c0f\u7ea2\u4e66|Xiaohongshu)/i;
+  const XIAOHONGSHU_SELF_TEXT = "\u6211";
 
   chrome.runtime.onMessage.addListener((message, _sender, sendResponse) => {
     if (![
@@ -82,6 +86,7 @@
     const items = [];
     const seen = new Set();
     const seenInstagramMediaItems = new Map();
+    const seenBehanceMediaItems = new Map();
     const seenWeiboMediaItems = new Map();
     const domainOriginalUrls = await getDomainOriginalUrlSet(maxIndexHint);
     const externalUrls = Array.isArray(externalSampledUrls) ? externalSampledUrls : [];
@@ -111,6 +116,7 @@
         : normalizeUrl(rawUrl);
       if (!url || seen.has(url)) return;
       const instagramMediaKey = /instagram\.com$/i.test(location.hostname) ? getInstagramMediaKey(url) : "";
+      const behanceMediaKey = /behance\.net$/i.test(location.hostname) ? getBehanceMediaKey(url) : "";
       const weiboMediaKey = /weibo\.com$/i.test(location.hostname) ? getWeiboMediaKey(url) : "";
       const width = Number(options.width || 0);
       const height = Number(options.height || 0);
@@ -127,6 +133,21 @@
             }
             seen.delete(existing.url);
           } else {
+            return;
+          }
+        }
+      }
+      if (behanceMediaKey) {
+        const existing = seenBehanceMediaItems.get(behanceMediaKey);
+        if (existing) {
+          if (isBetterBehanceMediaVariant({ url, score, area }, existing)) {
+            const index = items.indexOf(existing);
+            if (index >= 0) {
+              items.splice(index, 1);
+            }
+            seen.delete(existing.url);
+          } else {
+            hydrateKnownMediaMetadata(existing, { width, height, area });
             return;
           }
         }
@@ -158,10 +179,19 @@
         score,
         sourceHint,
       };
+      if (behanceMediaKey) {
+        const existing = seenBehanceMediaItems.get(behanceMediaKey);
+        if (existing) {
+          hydrateKnownMediaMetadata(item, existing);
+        }
+      }
       items.push(item);
       seen.add(url);
       if (instagramMediaKey) {
         seenInstagramMediaItems.set(instagramMediaKey, item);
+      }
+      if (behanceMediaKey) {
+        seenBehanceMediaItems.set(behanceMediaKey, item);
       }
       if (weiboMediaKey) {
         seenWeiboMediaItems.set(weiboMediaKey, item);
@@ -285,7 +315,7 @@
 
   function inferProjectName() {
     const parts = [];
-    const platform = sanitizeFolderName(inferFolderPlatformName());
+    const platform = sanitizeFolderSegment(inferFolderPlatformName());
     const facts = collectProjectIdentityFacts();
 
     if (/weibo\.com$/i.test(location.hostname)) {
@@ -293,13 +323,13 @@
         parts.push(platform);
       }
       if (facts.username) {
-        parts.push(sanitizeFolderName(facts.username));
+        parts.push(sanitizeFolderSegment(facts.username));
       }
       if (facts.publishedDateCode) {
-        parts.push(sanitizeFolderName(facts.publishedDateCode));
+        parts.push(sanitizeFolderSegment(facts.publishedDateCode));
       }
       if (facts.publishedTimeCode) {
-        parts.push(sanitizeFolderName(facts.publishedTimeCode));
+        parts.push(sanitizeFolderSegment(facts.publishedTimeCode));
       }
 
       const folderName = sanitizeFolderName(parts.filter(Boolean).join("_"));
@@ -310,13 +340,13 @@
       parts.push(platform);
     }
     if (facts.username) {
-      parts.push(sanitizeFolderName(facts.username));
+      parts.push(sanitizeFolderSegment(facts.username));
     }
     if (facts.publishedDateCode) {
-      parts.push(sanitizeFolderName(facts.publishedDateCode));
+      parts.push(sanitizeFolderSegment(facts.publishedDateCode));
     }
     if (facts.title) {
-      parts.push(sanitizeFolderName(facts.title));
+      parts.push(sanitizeFolderSegment(facts.title));
     }
 
     const folderName = sanitizeFolderName(parts.filter(Boolean).join("_"));
@@ -373,7 +403,10 @@
     }
 
     if (/behance\.net$/i.test(location.hostname)) {
-      facts.username = extractBehanceUsername(location.pathname);
+      const authorContext = inferBehanceAuthorContext();
+      facts.title = inferBehanceProjectTitle();
+      facts.username = authorContext?.authorName || authorContext?.slug || "";
+      facts.authorId = authorContext?.slug || "";
       facts.projectId = extractBehanceProjectId(location.pathname);
       facts.publishedAt = inferBehancePublishedAt();
       facts.publishedDateCode = formatDateCodeYymmdd(facts.publishedAt);
@@ -400,7 +433,7 @@
   }
 
   function inferFolderPlatformName() {
-    if (isXiaohongshuHost()) return "小红书";
+    if (isXiaohongshuHost()) return XIAOHONGSHU_DISPLAY_NAME;
     return inferPlatformName();
   }
 
@@ -434,6 +467,22 @@
     }
 
     return "";
+  }
+
+  function inferBehanceProjectTitle() {
+    const pathname = normalizePathname(location.pathname);
+    const match = pathname.match(/^\/gallery\/\d+\/([^/]+)/i);
+    if (match?.[1]) {
+      const slugTitle = decodeURIComponent(match[1])
+        .replace(/[-_]+/g, " ")
+        .trim();
+      const cleaned = cleanProjectTitle(slugTitle);
+      if (cleaned) {
+        return cleaned;
+      }
+    }
+
+    return inferProjectTitle();
   }
 
   function inferWeiboFolderName() {
@@ -625,7 +674,7 @@
       .replace(/\s*[|\-]\s*Behance\b.*$/i, "")
       .replace(/\s*[|\-]\s*Adobe\b.*$/i, "")
       .replace(/\s*[|\-]\s*Instagram\b.*$/i, "")
-      .replace(/\s*[|\-]\s*(?:小红书|Xiaohongshu)\b.*$/i, "")
+      .replace(XIAOHONGSHU_SUFFIX_PATTERN, "")
       .replace(/\s*[|\-]\s*Weibo\b.*$/i, "")
       .trim();
   }
@@ -633,11 +682,24 @@
   function sanitizeFolderName(value) {
     return String(value || "")
       .replace(/[\p{Extended_Pictographic}\uFE0F\u200D]/gu, " ")
-      .replace(/[<>:"/\\|?*\x00-\x1F]/g, "_")
-      .replace(/\s+/g, "_")
+      .replace(/[<>:"/\\|?*\x00-\x1F]/g, "-")
+      .replace(/\s+/g, "-")
+      .replace(/-+/g, "-")
       .replace(/_+/g, "_")
       .replace(/\.+$/g, "")
-      .replace(/^_+|_+$/g, "")
+      .replace(/^[-_]+|[-_]+$/g, "")
+      .trim()
+      .slice(0, 64);
+  }
+
+  function sanitizeFolderSegment(value) {
+    return String(value || "")
+      .replace(/[\p{Extended_Pictographic}\uFE0F\u200D]/gu, " ")
+      .replace(/[<>:"/\\|?*\x00-\x1F]/g, "-")
+      .replace(/[_\s]+/g, "-")
+      .replace(/-+/g, "-")
+      .replace(/\.+$/g, "")
+      .replace(/^-+|-+$/g, "")
       .trim()
       .slice(0, 64);
   }
@@ -1246,6 +1308,282 @@
     return match ? match[1] : "";
   }
 
+  function inferBehanceUsername() {
+    const direct = extractBehanceUsername(location.pathname);
+    if (direct) {
+      return direct;
+    }
+
+    const scored = new Map();
+    const push = (username, weight = 1) => {
+      const cleaned = String(username || "").trim();
+      if (!cleaned || !isUsableBehanceUsername(cleaned)) {
+        return;
+      }
+      scored.set(cleaned, (scored.get(cleaned) || 0) + weight);
+    };
+
+    [
+      document.querySelector('meta[property="og:url"]')?.content || "",
+      document.querySelector('meta[name="twitter:url"]')?.content || "",
+      document.querySelector('link[rel="canonical"]')?.href || "",
+    ].forEach((value) => push(extractBehanceProfileSlug(value), 3));
+
+    const anchors = Array.from(document.querySelectorAll('main a[href], header a[href], a[href]'));
+    anchors.forEach((anchor) => {
+      const username = extractBehanceProfileSlug(anchor.getAttribute("href") || "");
+      if (!username) {
+        return;
+      }
+
+      let weight = 1;
+      const text = cleanProjectTitle(
+        anchor.getAttribute("title") ||
+        anchor.getAttribute("aria-label") ||
+        anchor.textContent ||
+        ""
+      );
+      if (text) {
+        weight += 2;
+      }
+
+      const rect = typeof anchor.getBoundingClientRect === "function" ? anchor.getBoundingClientRect() : null;
+      if (rect && rect.top >= 0 && rect.top < window.innerHeight * 1.5) {
+        weight += 1;
+      }
+
+      if (anchor.closest("main")) {
+        weight += 1;
+      }
+
+      push(username, weight);
+    });
+
+    return Array.from(scored.entries())
+      .sort((a, b) => b[1] - a[1])
+      .map((entry) => entry[0])[0] || "";
+  }
+
+  function inferBehanceAuthorContext() {
+    const slug = inferBehanceUsername();
+    const authorName = inferBehanceAuthorName();
+    return {
+      slug,
+      authorName,
+    };
+  }
+
+  function inferBehanceAuthorName() {
+    const scored = new Map();
+    const push = (name, weight = 1) => {
+      const cleaned = cleanProjectTitle(name || "");
+      if (!cleaned || !isUsableBehanceAuthorName(cleaned)) {
+        return;
+      }
+      scored.set(cleaned, (scored.get(cleaned) || 0) + weight);
+    };
+
+    const main = document.querySelector("main");
+    const anchors = Array.from(document.querySelectorAll('main a[href], header a[href], a[href]'));
+    anchors.forEach((anchor) => {
+      const slug = extractBehanceProfileSlug(anchor.getAttribute("href") || "");
+      if (!slug) {
+        return;
+      }
+
+      const text = cleanProjectTitle(
+        anchor.getAttribute("title") ||
+        anchor.getAttribute("aria-label") ||
+        anchor.textContent ||
+        ""
+      );
+      if (!text) {
+        return;
+      }
+
+      let weight = 2;
+      if (main && anchor.closest("main")) {
+        weight += 3;
+      }
+      const rect = typeof anchor.getBoundingClientRect === "function" ? anchor.getBoundingClientRect() : null;
+      if (rect && rect.top >= 0 && rect.top < window.innerHeight * 1.8) {
+        weight += 2;
+      }
+      if (text.split(/\s+/).length >= 2) {
+        weight += 1;
+      }
+
+      push(text, weight);
+    });
+
+    collectBehanceJsonLdAuthorCandidates().forEach((entry) => {
+      push(entry.name, 4);
+    });
+
+    return Array.from(scored.entries())
+      .sort((a, b) => b[1] - a[1])
+      .map((entry) => entry[0])[0] || "";
+  }
+
+  function collectBehanceUsernameProbe() {
+    if (!/behance\.net$/i.test(location.hostname)) {
+      return null;
+    }
+
+    const directSlug = extractBehanceUsername(location.pathname);
+    const metaCandidates = [
+      {
+        label: "og:url",
+        value: document.querySelector('meta[property="og:url"]')?.content || "",
+      },
+      {
+        label: "twitter:url",
+        value: document.querySelector('meta[name="twitter:url"]')?.content || "",
+      },
+      {
+        label: "canonical",
+        value: document.querySelector('link[rel="canonical"]')?.href || "",
+      },
+    ].map((item) => ({
+      ...item,
+      slug: extractBehanceProfileSlug(item.value),
+    })).filter((item) => item.value);
+
+    const anchorCandidates = Array.from(document.querySelectorAll('main a[href], header a[href], a[href]'))
+      .map((anchor) => {
+        const href = anchor.getAttribute("href") || "";
+        const slug = extractBehanceProfileSlug(href);
+        const text = cleanProjectTitle(
+          anchor.getAttribute("title") ||
+          anchor.getAttribute("aria-label") ||
+          anchor.textContent ||
+          ""
+        );
+        if (!slug && !text) {
+          return null;
+        }
+        return {
+          href,
+          slug,
+          text,
+          inMain: !!anchor.closest("main"),
+        };
+      })
+      .filter(Boolean)
+      .slice(0, 20);
+
+    const metaAuthor = document.querySelector('meta[name="author"]')?.content || "";
+    const jsonLdCandidates = collectBehanceJsonLdAuthorCandidates();
+
+    return {
+      locationPath: location.pathname,
+      directSlug,
+      metaCandidates,
+      metaAuthor,
+      anchorCandidates,
+      jsonLdCandidates,
+      finalSlug: inferBehanceUsername(),
+      finalAuthorName: inferBehanceAuthorName(),
+    };
+  }
+
+  function collectBehanceJsonLdAuthorCandidates() {
+    const results = [];
+    const scripts = Array.from(document.querySelectorAll('script[type="application/ld+json"]'));
+    scripts.forEach((script) => {
+      const text = script.textContent || "";
+      if (!text.trim()) {
+        return;
+      }
+
+      try {
+        const parsed = JSON.parse(text);
+        const entries = Array.isArray(parsed) ? parsed : [parsed];
+        entries.forEach((entry) => {
+          const author = entry?.author;
+          const url = String(author?.url || author?.mainEntityOfPage || "");
+          const slug = extractBehanceProfileSlug(url);
+          const name = cleanProjectTitle(author?.name || author?.alternateName || author?.identifier || "");
+          if (url || slug || name) {
+            results.push({
+              url,
+              slug,
+              name,
+            });
+          }
+        });
+      } catch {
+        // Ignore invalid JSON-LD blocks.
+      }
+    });
+
+    return results.slice(0, 12);
+  }
+
+  function extractBehanceProfileSlug(value) {
+    const href = String(value || "").trim();
+    if (!href) {
+      return "";
+    }
+
+    try {
+      const parsed = new URL(href, location.href);
+      if (!/behance\.net$/i.test(parsed.hostname)) {
+        return "";
+      }
+      const pathname = normalizePathname(parsed.pathname);
+      const match = pathname.match(/^\/([^/]+)\/?$/);
+      return match ? match[1] : "";
+    } catch {
+      const pathname = normalizePathname(href);
+      const match = pathname.match(/^\/([^/]+)\/?$/);
+      return match ? match[1] : "";
+    }
+  }
+
+  function isUsableBehanceUsername(value) {
+    const text = String(value || "").trim().toLowerCase();
+    if (!text) {
+      return false;
+    }
+
+    return ![
+      "gallery",
+      "assets",
+      "joblist",
+      "search",
+      "about",
+      "adobe",
+      "schools",
+      "hire",
+      "blog",
+      "services",
+    ].includes(text);
+  }
+
+  function isUsableBehanceAuthorName(value) {
+    const text = String(value || "").trim();
+    if (!text || text.length < 3) {
+      return false;
+    }
+
+    const lowered = text.toLowerCase();
+    return ![
+      "behance",
+      "explore",
+      "jobs",
+      "client work",
+      "about behance",
+      "blog",
+      "community",
+      "help",
+      "tou",
+      "privacy",
+      "skip to main content",
+      "skip to footer",
+    ].includes(lowered);
+  }
+
   function extractBehanceProjectId(value) {
     const pathname = normalizePathname(value);
     const match = pathname.match(/\/project\/(\d+)/i);
@@ -1625,17 +1963,16 @@
       return null;
     }
 
-    const firstCluster = takeLeadingCluster(candidateImages, 1100);
-    const urls = createUrlSetFromCandidates(firstCluster);
+    const urls = createBehanceUrlSetFromCandidates(candidateImages);
     const htmlHighResUrls = collectBehanceHighResUrlsFromHtml();
-    htmlHighResUrls.forEach((url) => urls.add(url));
+    htmlHighResUrls.forEach((url) => mergeBehancePreferredUrl(urls, url));
 
     lastBehanceOriginalDebug = {
       candidateCount: candidateImages.length,
-      clusterCount: firstCluster.length,
+      clusterCount: candidateImages.length,
       urlCount: urls.size,
       htmlHighResCount: htmlHighResUrls.size,
-      srcset3840Count: firstCluster.filter((candidate) =>
+      srcset3840Count: candidateImages.filter((candidate) =>
         /\b3840w\b/i.test(candidate.img.getAttribute("srcset") || candidate.img.getAttribute("data-srcset") || "")
       ).length,
       preview: Array.from(urls).slice(0, 6),
@@ -1819,6 +2156,7 @@
       debug.behance = {
         mainFound: !!main,
         mainTop: main ? getContainerTop(main) : null,
+        usernameProbe: collectBehanceUsernameProbe(),
         original: lastBehanceOriginalDebug,
       };
     }
@@ -1890,7 +2228,7 @@
     }
 
     const metaTitle = document.querySelector('meta[property="og:title"]')?.content || "";
-    const titleMatch = metaTitle.match(/^(.{1,80}?)\s*的.*小红书/i);
+    const titleMatch = metaTitle.match(XIAOHONGSHU_TITLE_PATTERN);
     if (titleMatch?.[1]) {
       return {
         username: cleanProjectTitle(titleMatch[1]),
@@ -1946,7 +2284,7 @@
         userId: info.userId,
         text,
       };
-      if (text && text !== "我") {
+      if (text && text !== XIAOHONGSHU_SELF_TEXT) {
         return item;
       }
       if (!fallback) {
@@ -2049,7 +2387,7 @@
 
   function inferXiaohongshuAuthorContextV2() {
     const profileLink = findXiaohongshuPrimaryProfileLink();
-    if (profileLink?.userId && profileLink.text && profileLink.text !== "我") {
+    if (profileLink?.userId && profileLink.text && profileLink.text !== XIAOHONGSHU_SELF_TEXT) {
       return {
         username: profileLink.text || "",
         userId: profileLink.userId,
@@ -2059,7 +2397,7 @@
     }
 
     const profileCandidates = collectXiaohongshuProfileCandidates();
-    const bestCandidate = profileCandidates.find((item) => item.text && item.text !== "我") || null;
+    const bestCandidate = profileCandidates.find((item) => item.text && item.text !== XIAOHONGSHU_SELF_TEXT) || null;
     if (bestCandidate?.userId) {
       return {
         username: bestCandidate.text || "",
@@ -2079,7 +2417,7 @@
     }
 
     const metaTitle = document.querySelector('meta[property="og:title"]')?.content || "";
-    const titleMatch = metaTitle.match(/^(.{1,80}?)\s*(?:的|on)\s*(?:小红书|Xiaohongshu)/i);
+    const titleMatch = metaTitle.match(XIAOHONGSHU_TITLE_PATTERN);
     if (titleMatch?.[1]) {
       return {
         username: cleanProjectTitle(titleMatch[1]),
@@ -3164,6 +3502,53 @@
     return urls;
   }
 
+  function createBehanceUrlSetFromCandidates(candidates) {
+    const urls = new Set();
+    candidates.forEach((candidate) => appendBehanceCandidateUrls(urls, candidate.img));
+    return urls;
+  }
+
+  function appendBehanceCandidateUrls(urls, img) {
+    const candidateUrls = new Set();
+    const current = normalizeUrl(img.currentSrc || img.src);
+    if (current) {
+      candidateUrls.add(current);
+    }
+
+    const bestSrcset = pickBestSrcsetCandidate(img.getAttribute("srcset") || img.getAttribute("data-srcset") || "");
+    const srcsetUrl = normalizeUrl(bestSrcset);
+    if (srcsetUrl) {
+      candidateUrls.add(srcsetUrl);
+    }
+
+    getImageAttributeUrls(img).forEach((url) => candidateUrls.add(url));
+    candidateUrls.forEach((url) => mergeBehancePreferredUrl(urls, url));
+  }
+
+  function mergeBehancePreferredUrl(urls, rawUrl) {
+    const url = normalizeUrl(rawUrl);
+    if (!url) {
+      return;
+    }
+
+    const key = getBehanceMediaKey(url);
+    if (!key) {
+      urls.add(url);
+      return;
+    }
+
+    const existing = Array.from(urls).find((item) => getBehanceMediaKey(item) === key);
+    if (!existing) {
+      urls.add(url);
+      return;
+    }
+
+    if (isBetterBehanceMediaVariant({ url, score: 0, area: 0 }, { url: existing, score: 0, area: 0 })) {
+      urls.delete(existing);
+      urls.add(url);
+    }
+  }
+
   function appendCandidateUrls(urls, img) {
     const current = normalizeUrl(img.currentSrc || img.src);
     if (current) {
@@ -3256,6 +3641,120 @@
     const alt = String(img.getAttribute("alt") || "").toLowerCase();
     const src = String(img.currentSrc || img.src || "").toLowerCase();
     return /(avatar|profile|icon|logo|badge)/.test(`${alt} ${src}`);
+  }
+
+  function getBehanceMediaKey(rawUrl) {
+    const url = normalizeUrl(rawUrl);
+    if (!url) {
+      return "";
+    }
+
+    try {
+      const parsed = new URL(url);
+      if (!/behance\.net$/i.test(parsed.hostname)) {
+        return "";
+      }
+      const match = parsed.pathname.match(/\/project_modules\/[^/]+\/([^/?#]+)/i);
+      return match ? match[1].toLowerCase() : "";
+    } catch {
+      return "";
+    }
+  }
+
+  function getBehanceSizeRank(rawUrl) {
+    const url = normalizeUrl(rawUrl);
+    if (!url) {
+      return 0;
+    }
+
+    try {
+      const pathname = new URL(url).pathname.toLowerCase();
+      const match = pathname.match(/\/project_modules\/([^/]+)\//i);
+      const bucket = match ? match[1].toLowerCase() : "";
+      if (/^source/.test(bucket)) return 6;
+      if (/max_3840|(?:^|_)3840(?:_|$)/.test(bucket)) return 5;
+      if (/max_2560|(?:^|_)2560(?:_|$)/.test(bucket)) return 4;
+      if (/max_1920|(?:^|_)1920(?:_|$)/.test(bucket)) return 3;
+      if (/^fs(?:_|$)/.test(bucket)) return 2;
+      return 1;
+    } catch {
+      return 0;
+    }
+  }
+
+  function isBetterBehanceMediaVariant(candidate, existing) {
+    const candidateRank = getBehanceSizeRank(candidate.url);
+    const existingRank = getBehanceSizeRank(existing.url);
+    if (candidateRank !== existingRank) {
+      return candidateRank > existingRank;
+    }
+
+    if ((candidate.score || 0) !== (existing.score || 0)) {
+      return (candidate.score || 0) > (existing.score || 0);
+    }
+
+    return (candidate.area || 0) > (existing.area || 0);
+  }
+
+  function hydrateKnownMediaMetadata(target, source) {
+    if (!target || !source) {
+      return;
+    }
+
+    const targetWidth = Number(target.width || 0);
+    const targetHeight = Number(target.height || 0);
+    const sourceWidth = Number(source.width || 0);
+    const sourceHeight = Number(source.height || 0);
+    if ((!targetWidth || !targetHeight) && sourceWidth && sourceHeight) {
+      const inferred = inferBehanceVariantDimensions(target.url, {
+        width: sourceWidth,
+        height: sourceHeight,
+      });
+      const width = inferred.width || sourceWidth;
+      const height = inferred.height || sourceHeight;
+      target.width = width;
+      target.height = height;
+      target.area = width * height;
+      target.resolution = `${width} x ${height}`;
+    }
+  }
+
+  function inferBehanceVariantDimensions(rawUrl, fallback) {
+    const width = Number(fallback?.width || 0);
+    const height = Number(fallback?.height || 0);
+    if (!width || !height) {
+      return { width: 0, height: 0 };
+    }
+
+    const ratio = height / width;
+    const rankWidth = getBehanceRankWidth(rawUrl);
+    if (!rankWidth) {
+      return { width, height };
+    }
+
+    return {
+      width: rankWidth,
+      height: Math.max(1, Math.round(rankWidth * ratio)),
+    };
+  }
+
+  function getBehanceRankWidth(rawUrl) {
+    const url = normalizeUrl(rawUrl);
+    if (!url) {
+      return 0;
+    }
+
+    try {
+      const pathname = new URL(url).pathname.toLowerCase();
+      const match = pathname.match(/\/project_modules\/([^/]+)\//i);
+      const bucket = match ? match[1].toLowerCase() : "";
+      if (/max_3840|(?:^|_)3840(?:_|$)/.test(bucket)) return 3840;
+      if (/max_2560|(?:^|_)2560(?:_|$)/.test(bucket)) return 2560;
+      if (/max_1920|(?:^|_)1920(?:_|$)/.test(bucket)) return 1920;
+      return 0;
+    } catch {
+      return 0;
+    }
   }
 
   function inferFormat(url) {

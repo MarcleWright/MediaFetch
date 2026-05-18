@@ -230,7 +230,7 @@ async function downloadImageBatch(images, options) {
     const item = images[i];
     const extension = inferExtension(item.url, item.format);
     const fileName = `${String(i + 1).padStart(3, "0")}.${extension}`;
-    if (isSinaimgUrl(item.url)) {
+    if (shouldFetchBeforeDownload(item.url)) {
       await downloadFetchedImage(item.url, fileName);
     } else {
       await downloadToChrome({
@@ -867,6 +867,19 @@ function isSinaimgUrl(url) {
   }
 }
 
+function isXiaohongshuCdnUrl(url) {
+  try {
+    const parsed = new URL(url);
+    return /(^|\.)xhscdn\.com$/i.test(parsed.hostname) || /(^|\.)snsimg\.cn$/i.test(parsed.hostname);
+  } catch {
+    return false;
+  }
+}
+
+function shouldFetchBeforeDownload(url) {
+  return isSinaimgUrl(url) || isXiaohongshuCdnUrl(url);
+}
+
 function normalizeHttpUrl(value) {
   try {
     const parsed = new URL(String(value || ""));
@@ -940,11 +953,13 @@ function encodeBase64(bytes) {
 
 function sanitizePathPart(value) {
   return String(value || "")
-    .replace(/[<>:"/\\|?*\x00-\x1F]/g, "_")
-    .replace(/\s+/g, "_")
+    .replace(/[\p{Extended_Pictographic}\uFE0F\u200D]/gu, " ")
+    .replace(/[<>:"/\\|?*\x00-\x1F]/g, "-")
+    .replace(/\s+/g, "-")
+    .replace(/-+/g, "-")
     .replace(/_+/g, "_")
     .replace(/\.+$/g, "")
-    .replace(/^_+|_+$/g, "")
+    .replace(/^[-_]+|[-_]+$/g, "")
     .trim()
     .slice(0, 64);
 }
