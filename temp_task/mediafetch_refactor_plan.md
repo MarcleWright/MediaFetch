@@ -546,11 +546,13 @@ Implemented boundary:
 - Removed the Behance original debug global.
 - Converted Xiaohongshu original collection to return a structured media result directly through `collectXiaohongshuOriginalMedia()`.
 - Removed the Xiaohongshu original debug global.
+- Converted Weibo original collection to return a structured media result directly through `collectWeiboOriginalMedia()`.
+- Removed the Weibo original debug global.
 
 Intentionally not changed:
 
 - Existing public debug field names remain unchanged.
-- Remaining Instagram and Weibo original/sampling globals are retained until each helper can return structured media debug directly.
+- Remaining Instagram sampling and media-key globals are retained until the Instagram helper can return structured media debug and media keys directly.
 - Platform original extraction rules remain unchanged.
 
 ### Phase 4 Initial Pass
