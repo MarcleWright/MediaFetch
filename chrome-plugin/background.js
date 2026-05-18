@@ -8,6 +8,12 @@ const downloadTaskQueue = [];
 const DOWNLOAD_ORIGINALS_MENU_ID = "mediafetch-download-originals";
 const WEIBO_DOWNLOAD_RULE_ID = 901001;
 const METADATA_SENTINEL_FILE_NAME = "__mediafetch_metadata__.json";
+const DOWNLOAD_STRATEGY_DIRECT = "direct";
+const DOWNLOAD_STRATEGY_FETCH_IMAGE = "fetchImage";
+const DOWNLOAD_STRATEGY_RULES = [
+  { strategy: DOWNLOAD_STRATEGY_FETCH_IMAGE, test: isSinaimgUrl },
+  { strategy: DOWNLOAD_STRATEGY_FETCH_IMAGE, test: isXiaohongshuCdnUrl },
+];
 
 chrome.runtime.onInstalled.addListener(() => {
   setupContextMenus();
@@ -230,19 +236,35 @@ async function downloadImageBatch(images, options) {
     const item = images[i];
     const extension = inferExtension(item.url, item.format);
     const fileName = `${String(i + 1).padStart(3, "0")}.${extension}`;
-    if (shouldFetchBeforeDownload(item.url)) {
-      await downloadFetchedImage(item.url, fileName);
-    } else {
-      await downloadToChrome({
-        url: item.url,
-        filename: fileName,
-        saveAs: false,
-        conflictAction: "uniquify",
-      });
-    }
+    await executeDownloadStrategy(item, fileName, {
+      folder,
+      referer,
+      pageUrl: options.pageUrl || "",
+    });
   }
 
   await downloadTextFile(JSON.stringify(options.metadata || {}, null, 2), `${folder}/metadata.json`);
+}
+
+async function executeDownloadStrategy(item, filename, context = {}) {
+  const strategy = selectDownloadStrategy(item, context);
+  if (strategy === DOWNLOAD_STRATEGY_FETCH_IMAGE) {
+    await downloadFetchedImage(item.url, filename);
+    return;
+  }
+
+  await downloadToChrome({
+    url: item.url,
+    filename,
+    saveAs: false,
+    conflictAction: "uniquify",
+  });
+}
+
+function selectDownloadStrategy(item, _context = {}) {
+  const url = item?.url || "";
+  const rule = DOWNLOAD_STRATEGY_RULES.find((entry) => entry.test(url, item, _context));
+  return rule?.strategy || DOWNLOAD_STRATEGY_DIRECT;
 }
 
 async function downloadFetchedImage(url, filename) {
@@ -874,10 +896,6 @@ function isXiaohongshuCdnUrl(url) {
   } catch {
     return false;
   }
-}
-
-function shouldFetchBeforeDownload(url) {
-  return isSinaimgUrl(url) || isXiaohongshuCdnUrl(url);
 }
 
 function normalizeHttpUrl(value) {

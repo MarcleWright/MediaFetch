@@ -518,3 +518,23 @@ Intentionally not changed:
 - Existing public debug field names remain unchanged.
 - External sampling debug remains on existing globals for now.
 - Platform original extraction rules remain unchanged.
+
+### Phase 4 Initial Pass
+
+Status: started.
+
+Implemented boundary:
+
+- Added explicit download strategy constants in `background.js`.
+- Added `DOWNLOAD_STRATEGY_RULES`.
+- Added `selectDownloadStrategy(item, context)`.
+- Added `executeDownloadStrategy(item, filename, context)`.
+- Routed `downloadImageBatch()` through the strategy executor.
+- Removed the transitional `shouldFetchBeforeDownload()` helper so callers use the strategy selector.
+
+Intentionally not changed:
+
+- Existing strategy decision remains URL-based, but the URL checks now live in a rule table.
+- Weibo and Xiaohongshu CDN images still use the existing fetch-before-download path.
+- Metadata sentinel download behavior is unchanged.
+- Serial task queue behavior is unchanged.
