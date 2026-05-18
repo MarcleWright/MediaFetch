@@ -501,3 +501,20 @@ Intentionally not changed:
 - No media-key ranking rules changed.
 - Existing `lastXxxOriginalDebug` state remains in place for now.
 - Existing Instagram original media-key handling remains in place.
+
+### Phase 3 Debug Pass
+
+Status: started.
+
+Implemented boundary:
+
+- `extractImagesFromPage()` now passes `platformMedia` to `buildDebugInfo()`.
+- `collectPlatformMedia()` stores original debug snapshots under `media.debug.original`.
+- `buildDebugInfo()` keeps the existing external debug JSON shape while preferring `platformMedia.debug`.
+- `whitelistMediaKeyCount` now reads from `platformMedia.originalMediaKeys` with the old Instagram global as fallback.
+
+Intentionally not changed:
+
+- Existing public debug field names remain unchanged.
+- External sampling debug remains on existing globals for now.
+- Platform original extraction rules remain unchanged.

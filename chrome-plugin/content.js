@@ -274,7 +274,7 @@
 
     return {
       images,
-      debug: await buildDebugInfo(images, domainOriginalUrls, maxIndexHint),
+      debug: await buildDebugInfo(images, platformMedia, maxIndexHint),
     };
   }
 
@@ -1848,21 +1848,25 @@
     if (/instagram\.com$/i.test(location.hostname)) {
       media.originalUrls = await getInstagramOriginalUrlSet(maxIndexHint) || new Set();
       media.originalMediaKeys = lastInstagramOriginalMediaKeys || null;
+      media.debug.sampling = lastInstagramSamplingDebug;
       return media;
     }
 
     if (/behance\.net$/i.test(location.hostname)) {
       media.originalUrls = getBehanceOriginalUrlSet() || new Set();
+      media.debug.original = lastBehanceOriginalDebug;
       return media;
     }
 
     if (isXiaohongshuHost()) {
       media.originalUrls = getXiaohongshuOriginalUrlSet() || new Set();
+      media.debug.original = lastXiaohongshuOriginalDebug;
       return media;
     }
 
     if (/weibo\.com$/i.test(location.hostname)) {
       media.originalUrls = getWeiboOriginalUrlSet() || new Set();
+      media.debug.original = lastWeiboOriginalDebug;
       return media;
     }
 
@@ -2186,7 +2190,10 @@
     return !!left && left === right;
   }
 
-  async function buildDebugInfo(images, domainOriginalUrls, maxIndexHint = 0) {
+  async function buildDebugInfo(images, platformMedia, maxIndexHint = 0) {
+    const domainOriginalUrls = platformMedia?.originalUrls || null;
+    const mediaDebug = platformMedia?.debug || {};
+    const originalMediaKeys = platformMedia?.originalMediaKeys || lastInstagramOriginalMediaKeys || null;
     const originals = images.filter((item) => item.isOriginal).length;
     const instagramContainer = /instagram\.com$/i.test(location.hostname) ? findInstagramPostContainer() : null;
     const instagramMaxImgIndex = instagramContainer ? await extractInstagramCarouselCount(instagramContainer, maxIndexHint) : maxIndexHint;
@@ -2196,7 +2203,7 @@
       imageCount: images.length,
       originalCount: originals,
       whitelistCount: domainOriginalUrls ? domainOriginalUrls.size : null,
-      whitelistMediaKeyCount: lastInstagramOriginalMediaKeys ? lastInstagramOriginalMediaKeys.size : null,
+      whitelistMediaKeyCount: originalMediaKeys ? originalMediaKeys.size : null,
     };
 
     if (/instagram\.com$/i.test(location.hostname)) {
@@ -2211,7 +2218,7 @@
         containerFound: !!instagramContainer,
         containerTag: instagramContainer ? instagramContainer.tagName : null,
         usernameProbe: collectInstagramUsernameProbe(),
-        sampling: lastInstagramSamplingDebug,
+        sampling: mediaDebug.sampling || lastInstagramSamplingDebug,
         externalSampling: lastInstagramExternalSamplingDebug,
       };
     }
@@ -2222,7 +2229,7 @@
         mainFound: !!main,
         mainTop: main ? getContainerTop(main) : null,
         usernameProbe: collectBehanceUsernameProbe(),
-        original: lastBehanceOriginalDebug,
+        original: mediaDebug.original || lastBehanceOriginalDebug,
       };
     }
 
@@ -2230,7 +2237,7 @@
       debug.xiaohongshu = {
         noteId: extractXiaohongshuNoteId(location.href),
         usernameProbe: collectXiaohongshuUsernameProbeV2(),
-        original: lastXiaohongshuOriginalDebug,
+        original: mediaDebug.original || lastXiaohongshuOriginalDebug,
       };
     }
 
@@ -2238,7 +2245,7 @@
       debug.weibo = {
         statusId: extractWeiboStatusId(location.href),
         timeProbe: collectWeiboTimeProbe(),
-        original: lastWeiboOriginalDebug,
+        original: mediaDebug.original || lastWeiboOriginalDebug,
         externalSampling: lastWeiboExternalSamplingDebug,
       };
     }
