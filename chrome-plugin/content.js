@@ -88,7 +88,8 @@
     const seenInstagramMediaItems = new Map();
     const seenBehanceMediaItems = new Map();
     const seenWeiboMediaItems = new Map();
-    const domainOriginalUrls = await getDomainOriginalUrlSet(maxIndexHint);
+    const platformMedia = await collectPlatformMedia(maxIndexHint);
+    const domainOriginalUrls = platformMedia.originalUrls;
     const externalUrls = Array.isArray(externalSampledUrls) ? externalSampledUrls : [];
     const externalMergeDebug = mergeExternalSampledUrls(domainOriginalUrls, externalUrls);
     rebuildInstagramOriginalMediaKeys(domainOriginalUrls);
@@ -314,114 +315,158 @@
   }
 
   function inferProjectName() {
-    const parts = [];
-    const platform = sanitizeFolderSegment(inferFolderPlatformName());
     const facts = collectProjectIdentityFacts();
+    return buildFolderNameFromFacts(facts);
+  }
 
-    if (/weibo\.com$/i.test(location.hostname)) {
-      if (platform) {
-        parts.push(platform);
-      }
-      if (facts.username) {
-        parts.push(sanitizeFolderSegment(facts.username));
-      }
-      if (facts.publishedDateCode) {
-        parts.push(sanitizeFolderSegment(facts.publishedDateCode));
-      }
-      if (facts.publishedTimeCode) {
-        parts.push(sanitizeFolderSegment(facts.publishedTimeCode));
-      }
-
-      const folderName = sanitizeFolderName(parts.filter(Boolean).join("_"));
-      return folderName || "ProjectsA";
-    }
+  function buildFolderNameFromFacts(rawFacts) {
+    const facts = normalizeProjectFacts(rawFacts);
+    const parts = [];
+    const platform = sanitizeFolderSegment(facts.folderPlatform || facts.platform);
 
     if (platform) {
       parts.push(platform);
     }
-    if (facts.username) {
-      parts.push(sanitizeFolderSegment(facts.username));
+    if (facts.displayAuthor) {
+      parts.push(sanitizeFolderSegment(facts.displayAuthor));
     }
     if (facts.publishedDateCode) {
       parts.push(sanitizeFolderSegment(facts.publishedDateCode));
     }
-    if (facts.title) {
+    if (facts.platform === "weibo") {
+      if (facts.publishedTimeCode) {
+        parts.push(sanitizeFolderSegment(facts.publishedTimeCode));
+      }
+    } else if (facts.title) {
       parts.push(sanitizeFolderSegment(facts.title));
     }
-
     const folderName = sanitizeFolderName(parts.filter(Boolean).join("_"));
     return folderName || "ProjectsA";
   }
 
   function buildProjectMetadata() {
     const facts = collectProjectIdentityFacts();
-    const metadata = {
-      platform: inferPlatformName(),
-      domain: location.hostname,
-      projectUrl: location.href,
-      normalizedUrl: inferNormalizedProjectUrl(),
-      projectName: inferProjectName(),
+    return buildProjectMetadataFromFacts(facts);
+  }
+
+  function buildProjectMetadataFromFacts(rawFacts) {
+    const facts = normalizeProjectFacts(rawFacts);
+    return {
+      platform: facts.platform,
+      domain: facts.domain,
+      projectUrl: facts.projectUrl,
+      normalizedUrl: facts.normalizedUrl,
+      projectName: buildFolderNameFromFacts(facts),
       title: facts.title,
-      username: facts.username,
+      username: facts.displayAuthor,
       authorId: facts.authorId,
       projectId: facts.projectId,
       publishedAt: facts.publishedAt,
       publishedDateCode: facts.publishedDateCode,
+      publishedTimeCode: facts.publishedTimeCode,
     };
-
-    return metadata;
   }
 
   function collectProjectIdentityFacts() {
-    const facts = {
+    const facts = createEmptyProjectFacts();
+
+    if (/instagram\.com$/i.test(location.hostname)) {
+      return extractInstagramFacts(facts);
+    }
+
+    if (/weibo\.com$/i.test(location.hostname)) {
+      return extractWeiboFacts(facts);
+    }
+
+    if (/behance\.net$/i.test(location.hostname)) {
+      return extractBehanceFacts(facts);
+    }
+
+    if (isXiaohongshuHost()) {
+      return extractXiaohongshuFacts(facts);
+    }
+
+    return normalizeProjectFacts(facts);
+  }
+
+  function extractInstagramFacts(baseFacts) {
+    const facts = { ...baseFacts };
+    const context = collectInstagramPostContext();
+    facts.displayAuthor = context?.username || "";
+    facts.authorId = context?.username || "";
+    facts.projectId = context?.postCode || extractInstagramPostCode(location.pathname) || "";
+    facts.publishedAt = inferInstagramPublishedAt();
+    facts.publishedDateCode = inferInstagramPostDateCode();
+    return normalizeProjectFacts(facts);
+  }
+
+  function extractWeiboFacts(baseFacts) {
+    const facts = { ...baseFacts };
+    const dateTimeCode = inferWeiboPostDateTimeCode();
+    facts.displayAuthor = inferWeiboAuthorName();
+    facts.projectId = extractWeiboStatusId(location.href);
+    facts.publishedAt = inferWeiboPublishedAt();
+    facts.publishedDateCode = formatDateCodeYymmdd(facts.publishedAt) || formatDateCodeYymmdd(dateTimeCode);
+    facts.publishedTimeCode = /^\d{8,12}$/.test(dateTimeCode) ? dateTimeCode.slice(6) : "";
+    return normalizeProjectFacts(facts);
+  }
+
+  function extractBehanceFacts(baseFacts) {
+    const facts = { ...baseFacts };
+    const authorContext = inferBehanceAuthorContext();
+    facts.title = inferBehanceProjectTitle();
+    facts.displayAuthor = authorContext?.authorName || authorContext?.slug || "";
+    facts.authorId = authorContext?.slug || "";
+    facts.projectId = extractBehanceProjectId(location.pathname);
+    facts.publishedAt = inferBehancePublishedAt();
+    facts.publishedDateCode = formatDateCodeYymmdd(facts.publishedAt);
+    return normalizeProjectFacts(facts);
+  }
+
+  function extractXiaohongshuFacts(baseFacts) {
+    const facts = { ...baseFacts };
+    const authorContext = inferXiaohongshuAuthorContextV2();
+    facts.displayAuthor = authorContext?.username || "";
+    facts.authorId = authorContext?.userId || "";
+    facts.projectId = extractXiaohongshuNoteId(location.href);
+    return normalizeProjectFacts(facts);
+  }
+
+  function createEmptyProjectFacts() {
+    return {
+      platform: inferPlatformName(),
+      folderPlatform: inferFolderPlatformName(),
+      domain: location.hostname,
+      projectUrl: location.href,
+      normalizedUrl: inferNormalizedProjectUrl(),
       title: inferProjectTitle(),
-      username: "",
+      displayAuthor: "",
       authorId: "",
       projectId: "",
       publishedAt: "",
       publishedDateCode: "",
       publishedTimeCode: "",
     };
+  }
 
-    if (/instagram\.com$/i.test(location.hostname)) {
-      const context = collectInstagramPostContext();
-      facts.username = context?.username || "";
-      facts.projectId = context?.postCode || extractInstagramPostCode(location.pathname) || "";
-      facts.publishedAt = inferInstagramPublishedAt();
-      facts.publishedDateCode = inferInstagramPostDateCode();
-      return facts;
-    }
-
-    if (/weibo\.com$/i.test(location.hostname)) {
-      const dateTimeCode = inferWeiboPostDateTimeCode();
-      facts.username = inferWeiboAuthorName();
-      facts.projectId = extractWeiboStatusId(location.href);
-      facts.publishedAt = inferWeiboPublishedAt();
-      facts.publishedDateCode = formatDateCodeYymmdd(facts.publishedAt) || formatDateCodeYymmdd(dateTimeCode);
-      facts.publishedTimeCode = /^\d{8,12}$/.test(dateTimeCode) ? dateTimeCode.slice(6) : "";
-      return facts;
-    }
-
-    if (/behance\.net$/i.test(location.hostname)) {
-      const authorContext = inferBehanceAuthorContext();
-      facts.title = inferBehanceProjectTitle();
-      facts.username = authorContext?.authorName || authorContext?.slug || "";
-      facts.authorId = authorContext?.slug || "";
-      facts.projectId = extractBehanceProjectId(location.pathname);
-      facts.publishedAt = inferBehancePublishedAt();
-      facts.publishedDateCode = formatDateCodeYymmdd(facts.publishedAt);
-      return facts;
-    }
-
-    if (isXiaohongshuHost()) {
-      const authorContext = inferXiaohongshuAuthorContextV2();
-      facts.username = authorContext?.username || "";
-      facts.authorId = authorContext?.userId || "";
-      facts.projectId = extractXiaohongshuNoteId(location.href);
-      return facts;
-    }
-
-    return facts;
+  function normalizeProjectFacts(rawFacts) {
+    const facts = rawFacts || {};
+    const displayAuthor = facts.displayAuthor || facts.username || "";
+    return {
+      platform: facts.platform || inferPlatformName(),
+      folderPlatform: facts.folderPlatform || inferFolderPlatformName(),
+      domain: facts.domain || location.hostname,
+      projectUrl: facts.projectUrl || location.href,
+      normalizedUrl: facts.normalizedUrl || inferNormalizedProjectUrl(),
+      title: facts.title || "",
+      displayAuthor,
+      username: displayAuthor,
+      authorId: facts.authorId || "",
+      projectId: facts.projectId || "",
+      publishedAt: facts.publishedAt || "",
+      publishedDateCode: facts.publishedDateCode || "",
+      publishedTimeCode: facts.publishedTimeCode || "",
+    };
   }
 
   function inferPlatformName() {
@@ -1794,23 +1839,43 @@
   }
 
   async function getDomainOriginalUrlSet(maxIndexHint = 0) {
+    return (await collectPlatformMedia(maxIndexHint)).originalUrls;
+  }
+
+  async function collectPlatformMedia(maxIndexHint = 0) {
+    const media = createEmptyPlatformMedia();
+
     if (/instagram\.com$/i.test(location.hostname)) {
-      return await getInstagramOriginalUrlSet(maxIndexHint) || new Set();
+      media.originalUrls = await getInstagramOriginalUrlSet(maxIndexHint) || new Set();
+      media.originalMediaKeys = lastInstagramOriginalMediaKeys || null;
+      return media;
     }
 
     if (/behance\.net$/i.test(location.hostname)) {
-      return getBehanceOriginalUrlSet() || new Set();
+      media.originalUrls = getBehanceOriginalUrlSet() || new Set();
+      return media;
     }
 
     if (isXiaohongshuHost()) {
-      return getXiaohongshuOriginalUrlSet() || new Set();
+      media.originalUrls = getXiaohongshuOriginalUrlSet() || new Set();
+      return media;
     }
 
     if (/weibo\.com$/i.test(location.hostname)) {
-      return getWeiboOriginalUrlSet() || new Set();
+      media.originalUrls = getWeiboOriginalUrlSet() || new Set();
+      return media;
     }
 
-    return null;
+    media.originalUrls = null;
+    return media;
+  }
+
+  function createEmptyPlatformMedia() {
+    return {
+      originalUrls: null,
+      originalMediaKeys: null,
+      debug: {},
+    };
   }
 
   function getWeiboOriginalUrlSet() {
