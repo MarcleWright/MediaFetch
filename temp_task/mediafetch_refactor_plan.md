@@ -474,6 +474,20 @@ Intentionally not changed:
 
 - No behavior changes to extraction, naming, metadata, debug output, or downloads.
 
+### Phase 2 Facts Reuse Pass
+
+Status: started.
+
+Implemented boundary:
+
+- The main extraction response now calls `collectProjectIdentityFacts()` once.
+- `projectName` and `metadata` are derived from the same normalized facts object.
+
+Intentionally not changed:
+
+- Existing `inferProjectName()` and `buildProjectMetadata()` helper entry points remain available.
+- No folder naming, metadata field, or platform extraction behavior changed.
+
 ### Phase 1 Initial Pass
 
 Status: started.

@@ -63,11 +63,12 @@
         }
 
         const result = await extractImagesFromPage(message?.maxIndexHint || 0, message?.sampledUrls || [], message?.sampledIndexes || []);
+        const facts = collectProjectIdentityFacts();
         sendResponse({
           ok: true,
           pageUrl: location.href,
-          projectName: inferProjectName(),
-          metadata: buildProjectMetadata(),
+          projectName: buildFolderNameFromFacts(facts),
+          metadata: buildProjectMetadataFromFacts(facts),
           images: result.images,
           debug: result.debug,
         });
