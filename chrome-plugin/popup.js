@@ -13,6 +13,8 @@ const downloadBtn = document.getElementById("downloadBtn");
 const folderNameInput = document.getElementById("folderName");
 const selectionStatus = document.getElementById("selectionStatus");
 const statusEl = document.getElementById("status");
+const debugBoxEl = document.getElementById("debugBox");
+const toggleDebugBtn = document.getElementById("toggleDebugBtn");
 const debugInfoEl = document.getElementById("debugInfo");
 const copyDebugBtn = document.getElementById("copyDebugBtn");
 const resultsEl = document.getElementById("results");
@@ -53,6 +55,7 @@ selectOriginalBtn.addEventListener("click", () => {
 });
 downloadBtn.addEventListener("click", downloadSelected);
 copyDebugBtn.addEventListener("click", copyDebugInfo);
+toggleDebugBtn.addEventListener("click", toggleDebugSection);
 
 initializePopup();
 
@@ -851,6 +854,11 @@ function createPill(value) {
 function setStatus(message, isError = false) {
   statusEl.textContent = message;
   statusEl.classList.toggle("error", isError);
+}
+
+function toggleDebugSection() {
+  const collapsed = debugBoxEl.classList.toggle("collapsed");
+  toggleDebugBtn.setAttribute("aria-expanded", collapsed ? "false" : "true");
 }
 
 function renderDebugInfo(debug) {

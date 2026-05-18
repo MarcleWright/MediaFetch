@@ -35,10 +35,12 @@
     </section>
 
     <section id="status" class="status">Open a page and click Refresh.</section>
-    <section class="debugBox">
+    <section id="debugBox" class="debugBox collapsed">
       <div class="debugHeader">
-        <div class="debugTitle">Debug</div>
-        <button id="copyDebugBtn" type="button" class="secondaryBtn">Copy</button>
+        <button id="toggleDebugBtn" type="button" class="debugToggle" aria-expanded="false">Debug</button>
+        <div class="debugActions">
+          <button id="copyDebugBtn" type="button" class="secondaryBtn">Copy</button>
+        </div>
       </div>
       <pre id="debugInfo" class="debugInfo">No debug data yet.</pre>
     </section>

@@ -288,6 +288,24 @@
     const platform = sanitizeFolderName(inferFolderPlatformName());
     const facts = collectProjectIdentityFacts();
 
+    if (/weibo\.com$/i.test(location.hostname)) {
+      if (platform) {
+        parts.push(platform);
+      }
+      if (facts.username) {
+        parts.push(sanitizeFolderName(facts.username));
+      }
+      if (facts.publishedDateCode) {
+        parts.push(sanitizeFolderName(facts.publishedDateCode));
+      }
+      if (facts.publishedTimeCode) {
+        parts.push(sanitizeFolderName(facts.publishedTimeCode));
+      }
+
+      const folderName = sanitizeFolderName(parts.filter(Boolean).join("_"));
+      return folderName || "ProjectsA";
+    }
+
     if (platform) {
       parts.push(platform);
     }
@@ -332,6 +350,7 @@
       projectId: "",
       publishedAt: "",
       publishedDateCode: "",
+      publishedTimeCode: "",
     };
 
     if (/instagram\.com$/i.test(location.hostname)) {
@@ -344,10 +363,12 @@
     }
 
     if (/weibo\.com$/i.test(location.hostname)) {
+      const dateTimeCode = inferWeiboPostDateTimeCode();
       facts.username = inferWeiboAuthorName();
       facts.projectId = extractWeiboStatusId(location.href);
       facts.publishedAt = inferWeiboPublishedAt();
-      facts.publishedDateCode = formatDateCodeYymmdd(facts.publishedAt) || formatDateCodeYymmdd(inferWeiboPostDateTimeCode());
+      facts.publishedDateCode = formatDateCodeYymmdd(facts.publishedAt) || formatDateCodeYymmdd(dateTimeCode);
+      facts.publishedTimeCode = /^\d{8,12}$/.test(dateTimeCode) ? dateTimeCode.slice(6) : "";
       return facts;
     }
 
@@ -559,28 +580,7 @@
   }
 
   function inferWeiboPostDateTimeCode() {
-    const candidates = [
-      ...Array.from(document.querySelectorAll("time[datetime]")).map((node) => node.getAttribute("datetime") || ""),
-      ...Array.from(document.querySelectorAll("[datetime]")).map((node) => node.getAttribute("datetime") || ""),
-      document.querySelector('meta[property="article:published_time"]')?.content || "",
-      document.querySelector('meta[name="date"]')?.content || "",
-      document.querySelector('meta[property="og:time"]')?.content || "",
-    ];
-
-    const html = document.documentElement?.innerHTML || "";
-    const patterns = [
-      /"(?:created_at|publish_time|published_at|status_time)"\s*:\s*"([^"]+)"/i,
-      /"(?:created_at|publish_time|published_at|status_time)"\s*:\s*(\d{10,13})/i,
-      /"page_info".{0,400}?"page_title"\s*:\s*"([^"]+)"/i,
-    ];
-
-    patterns.forEach((pattern) => {
-      const match = html.match(pattern);
-      if (match?.[1]) {
-        candidates.push(match[1]);
-      }
-    });
-
+    const candidates = collectWeiboTimeCandidates();
     for (const value of candidates) {
       const code = formatWeiboDateTimeCode(value);
       if (code) {
@@ -602,13 +602,7 @@
       const numeric = Number(raw);
       date = new Date(raw.length === 13 ? numeric : numeric * 1000);
     } else {
-      const normalized = raw
-        .replace(/\u5e74|\/|\./g, "-")
-        .replace(/\u6708/g, "-")
-        .replace(/\u65e5/g, " ")
-        .replace(/\s+/g, " ")
-        .trim();
-      date = new Date(normalized);
+      date = parseWeiboDateLikeText(raw);
     }
 
     if (!date || Number.isNaN(date.getTime())) {
@@ -1039,27 +1033,165 @@
   }
 
   function inferWeiboPublishedAt() {
-    const candidates = [
-      ...Array.from(document.querySelectorAll("time[datetime]")).map((node) => node.getAttribute("datetime") || ""),
-      ...Array.from(document.querySelectorAll("[datetime]")).map((node) => node.getAttribute("datetime") || ""),
-      document.querySelector('meta[property="article:published_time"]')?.content || "",
-      document.querySelector('meta[name="date"]')?.content || "",
-      document.querySelector('meta[property="og:time"]')?.content || "",
-    ];
+    return normalizePublishedAt(collectWeiboTimeCandidates());
+  }
+
+  function collectWeiboTimeProbe() {
+    if (!/weibo\.com$/i.test(location.hostname)) {
+      return null;
+    }
+
+    const timeNodes = Array.from(document.querySelectorAll("time, [datetime]"))
+      .slice(0, 12)
+      .map((node) => ({
+        tag: node.tagName,
+        datetime: node.getAttribute("datetime") || "",
+        text: cleanProjectTitle(node.textContent || ""),
+      }));
+
+    const metaCandidates = [
+      {
+        label: "article:published_time",
+        value: document.querySelector('meta[property="article:published_time"]')?.content || "",
+      },
+      {
+        label: "date",
+        value: document.querySelector('meta[name="date"]')?.content || "",
+      },
+      {
+        label: "og:time",
+        value: document.querySelector('meta[property="og:time"]')?.content || "",
+      },
+    ].filter((item) => item.value);
+
+    const publishedAt = inferWeiboPublishedAt();
+    const dateTimeCode = inferWeiboPostDateTimeCode();
+    return {
+      locationPath: location.pathname,
+      locationSearch: location.search,
+      publishedAt,
+      publishedDateCode: formatDateCodeYymmdd(publishedAt) || formatDateCodeYymmdd(dateTimeCode),
+      publishedTimeCode: /^\d{8,12}$/.test(dateTimeCode) ? dateTimeCode.slice(6) : "",
+      timeNodes,
+      metaCandidates,
+      candidatePreview: collectWeiboTimeCandidates().slice(0, 16).map((value) => ({
+        value,
+        dateTimeCode: formatWeiboDateTimeCode(value),
+        normalizedPublishedAt: normalizePublishedAt([value]),
+      })),
+    };
+  }
+
+  function collectWeiboTimeCandidates() {
+    const candidates = [];
+    const seen = new Set();
+    const push = (value) => {
+      const text = String(value || "").trim();
+      if (!text || seen.has(text)) {
+        return;
+      }
+      seen.add(text);
+      candidates.push(text);
+    };
+
+    Array.from(document.querySelectorAll("time[datetime]")).forEach((node) => {
+      push(node.getAttribute("datetime") || "");
+      push(node.textContent || "");
+    });
+    Array.from(document.querySelectorAll("[datetime]")).forEach((node) => {
+      push(node.getAttribute("datetime") || "");
+      push(node.textContent || "");
+    });
+
+    push(document.querySelector('meta[property="article:published_time"]')?.content || "");
+    push(document.querySelector('meta[name="date"]')?.content || "");
+    push(document.querySelector('meta[property="og:time"]')?.content || "");
+
+    const root = findWeiboPostContainer();
+    if (root) {
+      const articleText = root.innerText || root.textContent || "";
+      extractWeiboDateStrings(articleText).forEach(push);
+    }
 
     const html = document.documentElement?.innerHTML || "";
-    const patterns = [
-      /"(?:created_at|publish_time|published_at|status_time)"\s*:\s*"([^"]+)"/i,
-      /"(?:created_at|publish_time|published_at|status_time)"\s*:\s*(\d{10,13})/i,
-    ];
-    patterns.forEach((pattern) => {
-      const match = html.match(pattern);
-      if (match?.[1]) {
-        candidates.push(match[1]);
+    [
+      /"(?:created_at|publish_time|published_at|status_time)"\s*:\s*"([^"]+)"/ig,
+      /"(?:created_at|publish_time|published_at|status_time)"\s*:\s*(\d{10,13})/ig,
+    ].forEach((pattern) => {
+      for (const match of html.matchAll(pattern)) {
+        if (match?.[1]) {
+          push(match[1]);
+        }
       }
     });
 
-    return normalizePublishedAt(candidates);
+    extractWeiboDateStrings(html).forEach(push);
+    return candidates;
+  }
+
+  function extractWeiboDateStrings(value) {
+    const text = String(value || "");
+    if (!text) {
+      return [];
+    }
+
+    const matches = new Set();
+    const patterns = [
+      /\b20\d{2}[-/.年]\d{1,2}[-/.月]\d{1,2}(?:日)?\s+\d{1,2}:\d{2}\b/g,
+      /\b\d{1,2}[-/.月]\d{1,2}(?:日)?\s+\d{1,2}:\d{2}\b/g,
+      /(?:今天|昨日|昨天)\s+\d{1,2}:\d{2}/g,
+      /\b\d{1,2}:\d{2}\b/g,
+    ];
+
+    for (const pattern of patterns) {
+      for (const match of text.matchAll(pattern)) {
+        const raw = String(match[0] || "").trim();
+        if (raw) {
+          matches.add(raw);
+        }
+      }
+    }
+
+    return Array.from(matches);
+  }
+
+  function parseWeiboDateLikeText(rawValue) {
+    const raw = String(rawValue || "").trim();
+    if (!raw) {
+      return null;
+    }
+
+    const now = new Date();
+    const todayMatch = raw.match(/^(今天|今日)\s+(\d{1,2}):(\d{2})$/);
+    if (todayMatch) {
+      return new Date(now.getFullYear(), now.getMonth(), now.getDate(), Number(todayMatch[2]), Number(todayMatch[3]));
+    }
+
+    const yesterdayMatch = raw.match(/^(昨天|昨日)\s+(\d{1,2}):(\d{2})$/);
+    if (yesterdayMatch) {
+      const date = new Date(now.getFullYear(), now.getMonth(), now.getDate(), Number(yesterdayMatch[2]), Number(yesterdayMatch[3]));
+      date.setDate(date.getDate() - 1);
+      return date;
+    }
+
+    const fullMatch = raw.match(/^(20\d{2})[-/.年](\d{1,2})[-/.月](\d{1,2})(?:日)?\s+(\d{1,2}):(\d{2})$/);
+    if (fullMatch) {
+      return new Date(Number(fullMatch[1]), Number(fullMatch[2]) - 1, Number(fullMatch[3]), Number(fullMatch[4]), Number(fullMatch[5]));
+    }
+
+    const monthDayMatch = raw.match(/^(\d{1,2})[-/.月](\d{1,2})(?:日)?\s+(\d{1,2}):(\d{2})$/);
+    if (monthDayMatch) {
+      return new Date(now.getFullYear(), Number(monthDayMatch[1]) - 1, Number(monthDayMatch[2]), Number(monthDayMatch[3]), Number(monthDayMatch[4]));
+    }
+
+    const normalized = raw
+      .replace(/\u5e74|\/|\./g, "-")
+      .replace(/\u6708/g, "-")
+      .replace(/\u65e5/g, " ")
+      .replace(/\s+/g, " ")
+      .trim();
+    const date = new Date(normalized);
+    return Number.isNaN(date.getTime()) ? null : date;
   }
 
   function inferBehancePublishedAt() {
@@ -1092,6 +1224,11 @@
           return date.toISOString();
         }
         continue;
+      }
+
+      const customDate = parseWeiboDateLikeText(raw);
+      if (customDate && !Number.isNaN(customDate.getTime())) {
+        return customDate.toISOString();
       }
 
       const date = new Date(raw);
@@ -1697,6 +1834,7 @@
     if (/weibo\.com$/i.test(location.hostname)) {
       debug.weibo = {
         statusId: extractWeiboStatusId(location.href),
+        timeProbe: collectWeiboTimeProbe(),
         original: lastWeiboOriginalDebug,
         externalSampling: lastWeiboExternalSamplingDebug,
       };

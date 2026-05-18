@@ -230,15 +230,50 @@ async function downloadImageBatch(images, options) {
     const item = images[i];
     const extension = inferExtension(item.url, item.format);
     const fileName = `${String(i + 1).padStart(3, "0")}.${extension}`;
-    await downloadToChrome({
-      url: item.url,
-      filename: fileName,
-      saveAs: false,
-      conflictAction: "uniquify",
-    });
+    if (isSinaimgUrl(item.url)) {
+      await downloadFetchedImage(item.url, fileName);
+    } else {
+      await downloadToChrome({
+        url: item.url,
+        filename: fileName,
+        saveAs: false,
+        conflictAction: "uniquify",
+      });
+    }
   }
 
   await downloadTextFile(JSON.stringify(options.metadata || {}, null, 2), `${folder}/metadata.json`);
+}
+
+async function downloadFetchedImage(url, filename) {
+  const response = await fetch(url, {
+    method: "GET",
+    credentials: "include",
+    cache: "no-store",
+  });
+
+  if (!response.ok) {
+    throw new Error(`Image request failed: ${response.status}`);
+  }
+
+  const contentType = String(response.headers.get("content-type") || "").toLowerCase();
+  if (contentType && !contentType.startsWith("image/")) {
+    throw new Error(`Unexpected response type: ${contentType}`);
+  }
+
+  const bytes = new Uint8Array(await response.arrayBuffer());
+  if (!bytes.length) {
+    throw new Error("Image response was empty.");
+  }
+
+  const mimeType = contentType || "image/jpeg";
+  const dataUrl = `data:${mimeType};base64,${encodeBase64(bytes)}`;
+  await downloadToChrome({
+    url: dataUrl,
+    filename,
+    saveAs: false,
+    conflictAction: "uniquify",
+  });
 }
 
 function enqueueDownloadTask(task) {
@@ -891,6 +926,16 @@ function updateQueueBadge() {
 
 function delay(ms) {
   return new Promise((resolve) => setTimeout(resolve, ms));
+}
+
+function encodeBase64(bytes) {
+  let binary = "";
+  const chunkSize = 0x8000;
+  for (let index = 0; index < bytes.length; index += chunkSize) {
+    const chunk = bytes.subarray(index, index + chunkSize);
+    binary += String.fromCharCode(...chunk);
+  }
+  return btoa(binary);
 }
 
 function sanitizePathPart(value) {
