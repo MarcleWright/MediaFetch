@@ -224,18 +224,19 @@ async function downloadSelectionTask(task) {
 async function downloadImageBatch(images, options) {
   const folder = sanitizePathPart(options.folder || "ProjectsA") || "ProjectsA";
   const referer = normalizeHttpUrl(options.pageUrl || "") || "https://weibo.com/";
+  const filePrefix = getDownloadFilePrefix(options.metadata);
   currentDownloadFolder = folder;
   currentDownloadReferer = referer;
   await setupDownloadHeaderRules(images.map((item) => item.url), referer);
   pendingDownloadFileNames = images.map((item, index) => {
     const extension = inferExtension(item.url, item.format);
-    return `${String(index + 1).padStart(3, "0")}.${extension}`;
+    return buildIndexedFileName(filePrefix, index, extension);
   });
 
   for (let i = 0; i < images.length; i += 1) {
     const item = images[i];
     const extension = inferExtension(item.url, item.format);
-    const fileName = `${String(i + 1).padStart(3, "0")}.${extension}`;
+    const fileName = buildIndexedFileName(filePrefix, i, extension);
     await executeDownloadStrategy(item, fileName, {
       folder,
       referer,
@@ -249,16 +250,36 @@ async function downloadImageBatch(images, options) {
 async function executeDownloadStrategy(item, filename, context = {}) {
   const strategy = selectDownloadStrategy(item, context);
   if (strategy === DOWNLOAD_STRATEGY_FETCH_IMAGE) {
-    await downloadFetchedImage(item.url, filename);
+    try {
+      await downloadFetchedImage(item.url, filename);
+    } catch (error) {
+      console.warn("MediaFetch fetch-image download failed; falling back to direct download.", error);
+      await downloadDirectImage(item.url, filename);
+    }
     return;
   }
 
+  await downloadDirectImage(item.url, filename);
+}
+
+async function downloadDirectImage(url, filename) {
   await downloadToChrome({
-    url: item.url,
+    url,
     filename,
     saveAs: false,
     conflictAction: "uniquify",
   });
+}
+
+function getDownloadFilePrefix(metadata) {
+  const projectId = sanitizePathPart(metadata?.projectId || "");
+  return projectId || "";
+}
+
+function buildIndexedFileName(prefix, index, extension) {
+  const serial = String(index + 1).padStart(3, "0");
+  const safeExtension = sanitizeFileName(extension || "jpg").replace(/^\.+/, "") || "jpg";
+  return prefix ? `${prefix}_${serial}.${safeExtension}` : `${serial}.${safeExtension}`;
 }
 
 // Network quirks are centralized here so download batching stays platform-neutral.
@@ -280,7 +301,7 @@ async function downloadFetchedImage(url, filename) {
   }
 
   const contentType = String(response.headers.get("content-type") || "").toLowerCase();
-  if (contentType && !contentType.startsWith("image/")) {
+  if (!isFetchedImageContentTypeAllowed(contentType)) {
     throw new Error(`Unexpected response type: ${contentType}`);
   }
 
@@ -289,7 +310,7 @@ async function downloadFetchedImage(url, filename) {
     throw new Error("Image response was empty.");
   }
 
-  const mimeType = contentType || "image/jpeg";
+  const mimeType = contentType.startsWith("image/") ? contentType : inferMimeTypeFromFilename(filename);
   const dataUrl = `data:${mimeType};base64,${encodeBase64(bytes)}`;
   await downloadToChrome({
     url: dataUrl,
@@ -297,6 +318,25 @@ async function downloadFetchedImage(url, filename) {
     saveAs: false,
     conflictAction: "uniquify",
   });
+}
+
+function isFetchedImageContentTypeAllowed(contentType) {
+  return (
+    !contentType ||
+    contentType.startsWith("image/") ||
+    contentType === "application/octet-stream" ||
+    contentType === "binary/octet-stream"
+  );
+}
+
+function inferMimeTypeFromFilename(filename) {
+  const extension = String(filename || "").split(".").pop().toLowerCase();
+  if (extension === "png") return "image/png";
+  if (extension === "webp") return "image/webp";
+  if (extension === "gif") return "image/gif";
+  if (extension === "avif") return "image/avif";
+  if (extension === "svg") return "image/svg+xml";
+  return "image/jpeg";
 }
 
 function enqueueDownloadTask(task) {
