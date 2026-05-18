@@ -1,7 +1,5 @@
 (() => {
-  const CONTENT_BUILD_HASH = "1123";
-  let lastInstagramSamplingDebug = null;
-  let lastInstagramOriginalMediaKeys = null;
+  const CONTENT_BUILD_HASH = "1124";
   const XIAOHONGSHU_DISPLAY_NAME = "\u5c0f\u7ea2\u4e66";
   const XIAOHONGSHU_SUFFIX_PATTERN = /\s*[|\-]\s*(?:\u5c0f\u7ea2\u4e66|Xiaohongshu)\b.*$/i;
   const XIAOHONGSHU_TITLE_PATTERN = /^(.{1,80}?)\s*(?:\u7684|on)\s*(?:\u5c0f\u7ea2\u4e66|Xiaohongshu)/i;
@@ -88,7 +86,6 @@
     const domainOriginalUrls = platformMedia.originalUrls;
     const externalUrls = Array.isArray(externalSampledUrls) ? externalSampledUrls : [];
     const externalMergeDebug = mergeExternalSampledUrls(domainOriginalUrls, externalUrls);
-    rebuildInstagramOriginalMediaKeys(domainOriginalUrls);
     const instagramExternalSamplingDebug = /instagram\.com$/i.test(location.hostname) ? {
       sampleIndexes: Array.isArray(externalSampledIndexes) ? externalSampledIndexes : [],
       sampledUrlCount: externalUrls.length,
@@ -259,7 +256,7 @@
       format: item.format,
       resolution: item.resolution,
       size: item.size,
-      isOriginal: detectOriginal(item, maxArea, domainOriginalUrls),
+      isOriginal: detectOriginal(item, maxArea, platformMedia),
       score: item.score,
       area: item.area,
       selected: false,
@@ -1827,9 +1824,10 @@
     }
   }
 
-  function detectOriginal(item, maxArea, domainOriginalUrls) {
+  function detectOriginal(item, maxArea, platformMedia) {
+    const domainOriginalUrls = platformMedia?.originalUrls || null;
     if (domainOriginalUrls) {
-      return domainOriginalUrls.has(item.url) || isInstagramOriginalMediaKey(item.url);
+      return domainOriginalUrls.has(item.url) || isInstagramOriginalMediaKey(item.url, platformMedia?.originalMediaKeys);
     }
 
     const area = item.area || 0;
@@ -1849,10 +1847,7 @@
     const media = createEmptyPlatformMedia();
 
     if (/instagram\.com$/i.test(location.hostname)) {
-      media.originalUrls = await getInstagramOriginalUrlSet(maxIndexHint) || new Set();
-      media.originalMediaKeys = lastInstagramOriginalMediaKeys || null;
-      media.debug.sampling = lastInstagramSamplingDebug;
-      return media;
+      return await collectInstagramOriginalMedia(maxIndexHint);
     }
 
     if (/behance\.net$/i.test(location.hostname)) {
@@ -1953,18 +1948,19 @@
     return media;
   }
 
-  async function getInstagramOriginalUrlSet(maxIndexHint = 0) {
+  async function collectInstagramOriginalMedia(maxIndexHint = 0) {
+    const media = createEmptyPlatformMedia();
     if (!/instagram\.com$/i.test(location.hostname)) {
-      return null;
+      return media;
     }
 
     if (!extractInstagramPostCode(location.pathname)) {
-      return null;
+      return media;
     }
 
     const article = findInstagramPostContainer();
     if (!article) {
-      return null;
+      return media;
     }
 
     const candidateImages = collectVisualCandidates(article, {
@@ -1976,7 +1972,7 @@
     });
 
     if (!candidateImages.length) {
-      return null;
+      return media;
     }
 
     const firstCluster = takeLeadingCluster(candidateImages, 900);
@@ -1985,7 +1981,7 @@
     const clusterCandidates = narrowed.length ? narrowed : firstCluster.slice(0, 10);
     const clusterUrls = createUrlSetFromCandidates(clusterCandidates);
     const carouselCount = await extractInstagramCarouselCount(article, maxIndexHint);
-    lastInstagramSamplingDebug = {
+    media.debug.sampling = {
       sampleIndexes: [],
       sampledUrlCount: 0,
       sampledUrlPreview: [],
@@ -1999,7 +1995,7 @@
       sampledUrls.forEach((url) => clusterUrls.add(url));
     }
 
-    lastInstagramSamplingDebug = {
+    media.debug.sampling = {
       sampleIndexes: carouselCount > 0 ? buildInstagramProbeIndexes(carouselCount) : [],
       sampledUrlCount: sampledUrls ? sampledUrls.size : 0,
       sampledMediaKeyCount: sampledUrls ? countInstagramMediaKeys(sampledUrls) : 0,
@@ -2008,7 +2004,9 @@
       carouselCount,
     };
 
-    return clusterUrls.size ? clusterUrls : null;
+    media.originalUrls = clusterUrls.size ? clusterUrls : null;
+    media.originalMediaKeys = buildInstagramOriginalMediaKeys(media.originalUrls);
+    return media;
   }
 
   function collectBehanceOriginalMedia() {
@@ -3165,12 +3163,7 @@
     }
   }
 
-  function rebuildInstagramOriginalMediaKeys(urls) {
-    if (!/instagram\.com$/i.test(location.hostname)) {
-      lastInstagramOriginalMediaKeys = null;
-      return;
-    }
-
+  function buildInstagramOriginalMediaKeys(urls) {
     const keys = new Set();
     if (urls) {
       urls.forEach((url) => {
@@ -3180,16 +3173,16 @@
         }
       });
     }
-    lastInstagramOriginalMediaKeys = keys;
+    return keys;
   }
 
-  function isInstagramOriginalMediaKey(url) {
-    if (!lastInstagramOriginalMediaKeys?.size) {
+  function isInstagramOriginalMediaKey(url, mediaKeys) {
+    if (!mediaKeys?.size) {
       return false;
     }
 
     const key = getInstagramMediaKey(url);
-    return !!key && lastInstagramOriginalMediaKeys.has(key);
+    return !!key && mediaKeys.has(key);
   }
 
   function countInstagramMediaKeys(urls) {

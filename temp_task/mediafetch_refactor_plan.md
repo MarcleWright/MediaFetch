@@ -548,11 +548,14 @@ Implemented boundary:
 - Removed the Xiaohongshu original debug global.
 - Converted Weibo original collection to return a structured media result directly through `collectWeiboOriginalMedia()`.
 - Removed the Weibo original debug global.
+- Converted Instagram original collection to return a structured media result directly through `collectInstagramOriginalMedia()`.
+- Moved Instagram sampling debug and original media keys into the platform media result.
+- Removed the remaining `lastXxx` content-script globals.
 
 Intentionally not changed:
 
 - Existing public debug field names remain unchanged.
-- Remaining Instagram sampling and media-key globals are retained until the Instagram helper can return structured media debug and media keys directly.
+- Instagram sampling behavior and media-key original detection are unchanged.
 - Platform original extraction rules remain unchanged.
 
 ### Phase 4 Initial Pass
