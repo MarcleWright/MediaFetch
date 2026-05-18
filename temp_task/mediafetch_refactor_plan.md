@@ -539,11 +539,12 @@ Implemented boundary:
 - `collectPlatformMedia()` stores original debug snapshots under `media.debug.original`.
 - `buildDebugInfo()` keeps the existing external debug JSON shape while preferring `platformMedia.debug`.
 - `whitelistMediaKeyCount` now reads from `platformMedia.originalMediaKeys` with the old Instagram global as fallback.
+- Instagram and Weibo external sampling debug now also attach to `platformMedia.debug.externalSampling`.
 
 Intentionally not changed:
 
 - Existing public debug field names remain unchanged.
-- External sampling debug remains on existing globals for now.
+- External sampling globals remain as fallback for now.
 - Platform original extraction rules remain unchanged.
 
 ### Phase 4 Initial Pass

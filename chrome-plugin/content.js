@@ -94,13 +94,18 @@
     const externalUrls = Array.isArray(externalSampledUrls) ? externalSampledUrls : [];
     const externalMergeDebug = mergeExternalSampledUrls(domainOriginalUrls, externalUrls);
     rebuildInstagramOriginalMediaKeys(domainOriginalUrls);
-    lastInstagramExternalSamplingDebug = /instagram\.com$/i.test(location.hostname) ? {
+    const instagramExternalSamplingDebug = /instagram\.com$/i.test(location.hostname) ? {
       sampleIndexes: Array.isArray(externalSampledIndexes) ? externalSampledIndexes : [],
       sampledUrlCount: externalUrls.length,
       sampledMediaKeyCount: countInstagramMediaKeys(externalUrls),
       sampledUrlPreview: externalUrls.slice(0, 6),
     } : null;
-    lastWeiboExternalSamplingDebug = /weibo\.com$/i.test(location.hostname) ? {
+    lastInstagramExternalSamplingDebug = instagramExternalSamplingDebug;
+    if (instagramExternalSamplingDebug) {
+      platformMedia.debug.externalSampling = instagramExternalSamplingDebug;
+    }
+
+    const weiboExternalSamplingDebug = /weibo\.com$/i.test(location.hostname) ? {
       layerIds: Array.isArray(externalSampledIndexes) ? externalSampledIndexes : [],
       sampledUrlCount: externalUrls.length,
       sampledMediaKeyCount: countWeiboMediaKeys(externalUrls),
@@ -111,6 +116,10 @@
       acceptedUrlPreview: externalMergeDebug.accepted.slice(0, 6),
       rejectedUrlPreview: externalMergeDebug.rejected.slice(0, 6),
     } : null;
+    lastWeiboExternalSamplingDebug = weiboExternalSamplingDebug;
+    if (weiboExternalSamplingDebug) {
+      platformMedia.debug.externalSampling = weiboExternalSamplingDebug;
+    }
 
     const push = (rawUrl, options = {}) => {
       const url = /weibo\.com$/i.test(location.hostname)
@@ -2220,7 +2229,7 @@
         containerTag: instagramContainer ? instagramContainer.tagName : null,
         usernameProbe: collectInstagramUsernameProbe(),
         sampling: mediaDebug.sampling || lastInstagramSamplingDebug,
-        externalSampling: lastInstagramExternalSamplingDebug,
+        externalSampling: mediaDebug.externalSampling || lastInstagramExternalSamplingDebug,
       };
     }
 
@@ -2247,7 +2256,7 @@
         statusId: extractWeiboStatusId(location.href),
         timeProbe: collectWeiboTimeProbe(),
         original: mediaDebug.original || lastWeiboOriginalDebug,
-        externalSampling: lastWeiboExternalSamplingDebug,
+        externalSampling: mediaDebug.externalSampling || lastWeiboExternalSamplingDebug,
       };
     }
 
