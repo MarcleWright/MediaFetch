@@ -319,6 +319,7 @@
     return buildFolderNameFromFacts(facts);
   }
 
+  // Folder naming is global policy; platform extractors only provide facts.
   function buildFolderNameFromFacts(rawFacts) {
     const facts = normalizeProjectFacts(rawFacts);
     const parts = [];
@@ -349,6 +350,7 @@
     return buildProjectMetadataFromFacts(facts);
   }
 
+  // Metadata is built from normalized facts so fields stay consistent across platforms.
   function buildProjectMetadataFromFacts(rawFacts) {
     const facts = normalizeProjectFacts(rawFacts);
     return {
@@ -449,6 +451,7 @@
     };
   }
 
+  // Normalize platform-specific findings into the shared facts shape.
   function normalizeProjectFacts(rawFacts) {
     const facts = rawFacts || {};
     const displayAuthor = facts.displayAuthor || facts.username || "";
@@ -1838,10 +1841,7 @@
     return areaRatio >= 0.85 || item.score >= 500;
   }
 
-  async function getDomainOriginalUrlSet(maxIndexHint = 0) {
-    return (await collectPlatformMedia(maxIndexHint)).originalUrls;
-  }
-
+  // Platform media collection owns original URL selection; callers consume the uniform result shape.
   async function collectPlatformMedia(maxIndexHint = 0) {
     const media = createEmptyPlatformMedia();
 

@@ -261,6 +261,7 @@ async function executeDownloadStrategy(item, filename, context = {}) {
   });
 }
 
+// Network quirks are centralized here so download batching stays platform-neutral.
 function selectDownloadStrategy(item, _context = {}) {
   const url = item?.url || "";
   const rule = DOWNLOAD_STRATEGY_RULES.find((entry) => entry.test(url, item, _context));

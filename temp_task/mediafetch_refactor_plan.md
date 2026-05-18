@@ -461,6 +461,19 @@ This gives the largest stability improvement with the smallest blast radius.
 
 ## Implementation Log
 
+### Boundary Cleanup Pass
+
+Status: started.
+
+Implemented boundary:
+
+- Removed the unused `getDomainOriginalUrlSet()` compatibility wrapper after confirming no remaining callers.
+- Added short boundary comments for folder naming, metadata construction, normalized facts, platform media collection, and download strategy selection.
+
+Intentionally not changed:
+
+- No behavior changes to extraction, naming, metadata, debug output, or downloads.
+
 ### Phase 1 Initial Pass
 
 Status: started.
