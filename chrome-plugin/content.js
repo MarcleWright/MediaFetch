@@ -1,5 +1,5 @@
 (() => {
-  const CONTENT_BUILD_HASH = "1124";
+  const CONTENT_BUILD_HASH = "1125";
   const XIAOHONGSHU_DISPLAY_NAME = "\u5c0f\u7ea2\u4e66";
   const XIAOHONGSHU_SUFFIX_PATTERN = /\s*[|\-]\s*(?:\u5c0f\u7ea2\u4e66|Xiaohongshu)\b.*$/i;
   const XIAOHONGSHU_TITLE_PATTERN = /^(.{1,80}?)\s*(?:\u7684|on)\s*(?:\u5c0f\u7ea2\u4e66|Xiaohongshu)/i;
@@ -229,14 +229,16 @@
       }
     };
 
-    if (/(instagram\.com|behance\.net|weibo\.com)$/i.test(location.hostname) && domainOriginalUrls?.size) {
+    if ((/(instagram\.com|behance\.net|weibo\.com)$/i.test(location.hostname) || isXiaohongshuHost()) && domainOriginalUrls?.size) {
       domainOriginalUrls.forEach((url) => {
         push(url, {
           sourceHint: /behance\.net$/i.test(location.hostname)
             ? "behance-original"
             : /weibo\.com$/i.test(location.hostname)
               ? "weibo-original"
-              : "instagram-sampled",
+              : isXiaohongshuHost()
+                ? "xiaohongshu-original"
+                : "instagram-sampled",
         });
       });
     }
@@ -1685,7 +1687,7 @@
       const sizePartIndex = parts.length - 2;
       const sizePart = parts[sizePartIndex] || "";
       if (isWeiboCdnSizeSegment(sizePart)) {
-        parts[sizePartIndex] = "mw2000";
+        parts[sizePartIndex] = "large";
       }
 
       parsed.pathname = parts.join("/");
@@ -1762,6 +1764,7 @@
     let score = 0;
     if (sourceHint === "weibo-original") score += 580;
     else if (sourceHint === "behance-original") score += 560;
+    else if (sourceHint === "xiaohongshu-original") score += 550;
     else if (sourceHint === "rendered-srcset") score += 400;
     else if (sourceHint === "rendered-data") score += 360;
     else if (sourceHint === "rendered-meta") score += 320;
@@ -1925,7 +1928,7 @@
 
     const mediaCandidates = selectXiaohongshuPostMediaCandidates(candidateImages);
     createUrlSetFromCandidates(mediaCandidates).forEach((url) => {
-      const normalized = normalizeUrl(url);
+      const normalized = normalizeXiaohongshuImageUrl(url);
       if (normalized) urls.add(normalized);
     });
 
@@ -2704,6 +2707,27 @@
 
     const firstCluster = takeLeadingCluster(realMedia, 800);
     return firstCluster.filter((candidate) => candidate.linkType !== "profile").slice(0, 20);
+  }
+
+  function normalizeXiaohongshuImageUrl(rawUrl) {
+    const normalized = normalizeUrl(rawUrl);
+    if (!normalized) {
+      return "";
+    }
+
+    try {
+      const parsed = new URL(normalized);
+      if (!/(^|\.)xhscdn\.com$/i.test(parsed.hostname) && !/(^|\.)snsimg\.cn$/i.test(parsed.hostname)) {
+        return normalized;
+      }
+
+      parsed.hash = "";
+      parsed.search = "";
+      parsed.pathname = parsed.pathname.replace(/!.+$/i, "");
+      return parsed.toString();
+    } catch {
+      return normalized.replace(/([?#].*)$/, "").replace(/!.+$/i, "");
+    }
   }
 
   function selectWeiboPostMediaCandidates(candidates) {
