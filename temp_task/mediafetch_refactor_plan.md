@@ -542,11 +542,13 @@ Implemented boundary:
 - Instagram and Weibo external sampling debug now also attach to `platformMedia.debug.externalSampling`.
 - Removed the Instagram and Weibo external sampling debug globals after confirming the public debug output can read from `platformMedia.debug.externalSampling`.
 - Audited remaining `lastXxx` globals. They still act as write-through state for existing platform original/sampling helpers or Instagram media-key original detection.
+- Converted Behance original collection to return a structured media result directly through `collectBehanceOriginalMedia()`.
+- Removed the Behance original debug global.
 
 Intentionally not changed:
 
 - Existing public debug field names remain unchanged.
-- Remaining platform original/sampling globals are retained until each helper can return structured media debug directly.
+- Remaining Instagram, Xiaohongshu, and Weibo original/sampling globals are retained until each helper can return structured media debug directly.
 - Platform original extraction rules remain unchanged.
 
 ### Phase 4 Initial Pass

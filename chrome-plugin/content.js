@@ -2,7 +2,6 @@
   const CONTENT_BUILD_HASH = "1123";
   let lastInstagramSamplingDebug = null;
   let lastInstagramOriginalMediaKeys = null;
-  let lastBehanceOriginalDebug = null;
   let lastXiaohongshuOriginalDebug = null;
   let lastWeiboOriginalDebug = null;
   const XIAOHONGSHU_DISPLAY_NAME = "\u5c0f\u7ea2\u4e66";
@@ -1859,9 +1858,7 @@
     }
 
     if (/behance\.net$/i.test(location.hostname)) {
-      media.originalUrls = getBehanceOriginalUrlSet() || new Set();
-      media.debug.original = lastBehanceOriginalDebug;
-      return media;
+      return collectBehanceOriginalMedia();
     }
 
     if (isXiaohongshuHost()) {
@@ -2018,11 +2015,11 @@
     return clusterUrls.size ? clusterUrls : null;
   }
 
-  function getBehanceOriginalUrlSet() {
-    lastBehanceOriginalDebug = null;
+  function collectBehanceOriginalMedia() {
+    const media = createEmptyPlatformMedia();
     const main = document.querySelector("main");
     if (!main) {
-      return null;
+      return media;
     }
 
     const candidateImages = collectVisualCandidates(main, {
@@ -2035,14 +2032,15 @@
     });
 
     if (!candidateImages.length) {
-      return null;
+      return media;
     }
 
     const urls = createBehanceUrlSetFromCandidates(candidateImages);
     const htmlHighResUrls = collectBehanceHighResUrlsFromHtml();
     htmlHighResUrls.forEach((url) => mergeBehancePreferredUrl(urls, url));
 
-    lastBehanceOriginalDebug = {
+    media.originalUrls = urls.size ? urls : null;
+    media.debug.original = {
       candidateCount: candidateImages.length,
       clusterCount: candidateImages.length,
       urlCount: urls.size,
@@ -2053,7 +2051,7 @@
       preview: Array.from(urls).slice(0, 6),
     };
 
-    return urls.size ? urls : null;
+    return media;
   }
 
   function collectVisualCandidates(root, options) {
