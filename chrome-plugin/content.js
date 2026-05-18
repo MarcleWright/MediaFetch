@@ -2,7 +2,6 @@
   const CONTENT_BUILD_HASH = "1123";
   let lastInstagramSamplingDebug = null;
   let lastInstagramOriginalMediaKeys = null;
-  let lastXiaohongshuOriginalDebug = null;
   let lastWeiboOriginalDebug = null;
   const XIAOHONGSHU_DISPLAY_NAME = "\u5c0f\u7ea2\u4e66";
   const XIAOHONGSHU_SUFFIX_PATTERN = /\s*[|\-]\s*(?:\u5c0f\u7ea2\u4e66|Xiaohongshu)\b.*$/i;
@@ -1862,9 +1861,7 @@
     }
 
     if (isXiaohongshuHost()) {
-      media.originalUrls = getXiaohongshuOriginalUrlSet() || new Set();
-      media.debug.original = lastXiaohongshuOriginalDebug;
-      return media;
+      return collectXiaohongshuOriginalMedia();
     }
 
     if (/weibo\.com$/i.test(location.hostname)) {
@@ -1923,10 +1920,10 @@
     return urls.size ? urls : null;
   }
 
-  function getXiaohongshuOriginalUrlSet() {
-    lastXiaohongshuOriginalDebug = null;
+  function collectXiaohongshuOriginalMedia() {
+    const media = createEmptyPlatformMedia();
     if (!isXiaohongshuHost()) {
-      return null;
+      return media;
     }
 
     const root = findXiaohongshuPostContainer();
@@ -1945,7 +1942,8 @@
       if (normalized) urls.add(normalized);
     });
 
-    lastXiaohongshuOriginalDebug = {
+    media.originalUrls = urls.size ? urls : null;
+    media.debug.original = {
       containerFound: !!root,
       containerTag: root ? root.tagName : null,
       candidateCount: candidateImages.length,
@@ -1954,7 +1952,7 @@
       preview: Array.from(urls).slice(0, 6),
     };
 
-    return urls.size ? urls : null;
+    return media;
   }
 
   async function getInstagramOriginalUrlSet(maxIndexHint = 0) {
