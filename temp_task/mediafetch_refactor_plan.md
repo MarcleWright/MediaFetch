@@ -577,3 +577,126 @@ Intentionally not changed:
 - Weibo and Xiaohongshu CDN images still use the existing fetch-before-download path.
 - Metadata sentinel download behavior is unchanged.
 - Serial task queue behavior is unchanged.
+
+### Phase 3.5 Proposed: Lightweight Platform Registry
+
+Status: started.
+
+Purpose:
+
+- Centralize platform dispatch without physically splitting files.
+- Make new platform support require fewer entry-point edits.
+- Keep the current facts/media/debug/download boundaries intact.
+
+Scope:
+
+- Platform identification.
+- Folder platform display name.
+- Facts extractor selection.
+- Media collector selection.
+
+Non-goals:
+
+- Do not move code into separate files yet.
+- Do not change original extraction rules.
+- Do not change Instagram sampling behavior.
+- Do not move popup/background sampling orchestration.
+- Do not move download strategy into the content registry.
+- Do not rewrite debug builders into platform adapters yet.
+
+Proposed shape:
+
+```js
+const PLATFORM_REGISTRY = [
+  {
+    id: "instagram",
+    folderPlatform: "instagram",
+    match: isInstagramHost,
+    extractFacts: extractInstagramFacts,
+    collectMedia: collectInstagramOriginalMedia,
+  },
+  {
+    id: "behance",
+    folderPlatform: "behance",
+    match: isBehanceHost,
+    extractFacts: extractBehanceFacts,
+    collectMedia: collectBehanceOriginalMedia,
+  },
+  {
+    id: "xiaohongshu",
+    folderPlatform: XIAOHONGSHU_DISPLAY_NAME,
+    match: isXiaohongshuHost,
+    extractFacts: extractXiaohongshuFacts,
+    collectMedia: collectXiaohongshuOriginalMedia,
+  },
+  {
+    id: "weibo",
+    folderPlatform: "weibo",
+    match: isWeiboHost,
+    extractFacts: extractWeiboFacts,
+    collectMedia: collectWeiboOriginalMedia,
+  },
+];
+```
+
+Required helper:
+
+```js
+function getCurrentPlatformAdapter() {
+  return PLATFORM_REGISTRY.find((platform) => platform.match()) || null;
+}
+```
+
+Migration steps:
+
+1. Add host helpers:
+   - `isInstagramHost()`
+   - `isBehanceHost()`
+   - `isWeiboHost()`
+   - existing `isXiaohongshuHost()`
+
+2. Add `PLATFORM_REGISTRY`.
+
+3. Update `inferPlatformName()`:
+   - read `adapter.id`
+   - fallback to current hostname behavior
+
+4. Update `inferFolderPlatformName()`:
+   - read `adapter.folderPlatform`
+   - fallback to `inferPlatformName()`
+
+5. Update `collectProjectIdentityFacts()`:
+   - call `adapter.extractFacts(baseFacts)` when available
+   - fallback to `normalizeProjectFacts(baseFacts)`
+
+6. Update `collectPlatformMedia()`:
+   - call `adapter.collectMedia(maxIndexHint)` when available
+   - fallback to empty media result
+
+Expected benefits:
+
+- New platforms start by adding one registry entry plus platform-specific helper functions.
+- Existing global naming and metadata builders remain unchanged.
+- Platform dispatch is less scattered across `content.js`.
+- This creates a safer stepping stone before any Phase 5 file split.
+
+Risks:
+
+- Adapter functions need consistent signatures.
+- Instagram media collection needs `maxIndexHint`, while most platforms ignore it.
+- Host helper changes must preserve exact current matching behavior.
+
+Rollback:
+
+- The registry migration should be one commit.
+- If dispatch breaks, revert that commit and the platform helper functions remain usable through the old direct calls.
+
+Implementation notes:
+
+- Added `PLATFORM_REGISTRY` in `content.js`.
+- Added `getCurrentPlatformAdapter()`.
+- Added `isInstagramHost()`, `isBehanceHost()`, and `isWeiboHost()`.
+- Updated `inferPlatformName()` and `inferFolderPlatformName()` to read from the current adapter.
+- Updated `collectProjectIdentityFacts()` to dispatch through `adapter.extractFacts`.
+- Updated `collectPlatformMedia()` to dispatch through `adapter.collectMedia`.
+- Kept debug building, download strategy, popup/background orchestration, and physical file layout unchanged.

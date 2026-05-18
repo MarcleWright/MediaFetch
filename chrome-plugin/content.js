@@ -4,6 +4,36 @@
   const XIAOHONGSHU_SUFFIX_PATTERN = /\s*[|\-]\s*(?:\u5c0f\u7ea2\u4e66|Xiaohongshu)\b.*$/i;
   const XIAOHONGSHU_TITLE_PATTERN = /^(.{1,80}?)\s*(?:\u7684|on)\s*(?:\u5c0f\u7ea2\u4e66|Xiaohongshu)/i;
   const XIAOHONGSHU_SELF_TEXT = "\u6211";
+  const PLATFORM_REGISTRY = [
+    {
+      id: "instagram",
+      folderPlatform: "instagram",
+      match: isInstagramHost,
+      extractFacts: extractInstagramFacts,
+      collectMedia: collectInstagramOriginalMedia,
+    },
+    {
+      id: "behance",
+      folderPlatform: "behance",
+      match: isBehanceHost,
+      extractFacts: extractBehanceFacts,
+      collectMedia: collectBehanceOriginalMedia,
+    },
+    {
+      id: "xiaohongshu",
+      folderPlatform: XIAOHONGSHU_DISPLAY_NAME,
+      match: isXiaohongshuHost,
+      extractFacts: extractXiaohongshuFacts,
+      collectMedia: collectXiaohongshuOriginalMedia,
+    },
+    {
+      id: "weibo",
+      folderPlatform: "weibo",
+      match: isWeiboHost,
+      extractFacts: extractWeiboFacts,
+      collectMedia: collectWeiboOriginalMedia,
+    },
+  ];
 
   chrome.runtime.onMessage.addListener((message, _sender, sendResponse) => {
     if (![
@@ -371,24 +401,8 @@
 
   function collectProjectIdentityFacts() {
     const facts = createEmptyProjectFacts();
-
-    if (/instagram\.com$/i.test(location.hostname)) {
-      return extractInstagramFacts(facts);
-    }
-
-    if (/weibo\.com$/i.test(location.hostname)) {
-      return extractWeiboFacts(facts);
-    }
-
-    if (/behance\.net$/i.test(location.hostname)) {
-      return extractBehanceFacts(facts);
-    }
-
-    if (isXiaohongshuHost()) {
-      return extractXiaohongshuFacts(facts);
-    }
-
-    return normalizeProjectFacts(facts);
+    const adapter = getCurrentPlatformAdapter();
+    return adapter?.extractFacts ? adapter.extractFacts(facts) : normalizeProjectFacts(facts);
   }
 
   function extractInstagramFacts(baseFacts) {
@@ -473,20 +487,18 @@
   }
 
   function inferPlatformName() {
-    if (/instagram\.com$/i.test(location.hostname)) return "instagram";
-    if (/behance\.net$/i.test(location.hostname)) return "behance";
-    if (/weibo\.com$/i.test(location.hostname)) return "weibo";
-    if (isXiaohongshuHost()) return "xiaohongshu";
+    const adapter = getCurrentPlatformAdapter();
+    if (adapter?.id) return adapter.id;
     return location.hostname.replace(/^www\./i, "") || "web";
   }
 
   function inferFolderPlatformName() {
-    if (isXiaohongshuHost()) return XIAOHONGSHU_DISPLAY_NAME;
-    return inferPlatformName();
+    const adapter = getCurrentPlatformAdapter();
+    return adapter?.folderPlatform || inferPlatformName();
   }
 
   function inferNormalizedProjectUrl() {
-    if (/instagram\.com$/i.test(location.hostname)) {
+    if (isInstagramHost()) {
       return buildInstagramNormalizedUrl(collectInstagramPostContext());
     }
 
@@ -1844,26 +1856,8 @@
 
   // Platform media collection owns original URL selection; callers consume the uniform result shape.
   async function collectPlatformMedia(maxIndexHint = 0) {
-    const media = createEmptyPlatformMedia();
-
-    if (/instagram\.com$/i.test(location.hostname)) {
-      return await collectInstagramOriginalMedia(maxIndexHint);
-    }
-
-    if (/behance\.net$/i.test(location.hostname)) {
-      return collectBehanceOriginalMedia();
-    }
-
-    if (isXiaohongshuHost()) {
-      return collectXiaohongshuOriginalMedia();
-    }
-
-    if (/weibo\.com$/i.test(location.hostname)) {
-      return collectWeiboOriginalMedia();
-    }
-
-    media.originalUrls = null;
-    return media;
+    const adapter = getCurrentPlatformAdapter();
+    return adapter?.collectMedia ? await adapter.collectMedia(maxIndexHint) : createEmptyPlatformMedia();
   }
 
   function createEmptyPlatformMedia() {
@@ -2188,6 +2182,10 @@
     return !!left && left === right;
   }
 
+  function getCurrentPlatformAdapter() {
+    return PLATFORM_REGISTRY.find((platform) => platform.match()) || null;
+  }
+
   async function buildDebugInfo(images, platformMedia, maxIndexHint = 0) {
     const domainOriginalUrls = platformMedia?.originalUrls || null;
     const mediaDebug = platformMedia?.debug || {};
@@ -2275,6 +2273,18 @@
 
   function isXiaohongshuHost() {
     return /(^|\.)xiaohongshu\.com$/i.test(location.hostname);
+  }
+
+  function isInstagramHost() {
+    return /(^|\.)instagram\.com$/i.test(location.hostname);
+  }
+
+  function isBehanceHost() {
+    return /(^|\.)behance\.net$/i.test(location.hostname);
+  }
+
+  function isWeiboHost() {
+    return /(^|\.)weibo\.com$/i.test(location.hostname);
   }
 
   function inferXiaohongshuAuthorContext() {
