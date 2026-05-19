@@ -1,5 +1,5 @@
 (() => {
-  const CONTENT_BUILD_HASH = "1130";
+  const CONTENT_BUILD_HASH = "1132";
   const XIAOHONGSHU_DISPLAY_NAME = "\u5c0f\u7ea2\u4e66";
   const XIAOHONGSHU_SUFFIX_PATTERN = /\s*[|\-]\s*(?:\u5c0f\u7ea2\u4e66|Xiaohongshu)\b.*$/i;
   const XIAOHONGSHU_TITLE_PATTERN = /^(.{1,80}?)\s*(?:\u7684|on)\s*(?:\u5c0f\u7ea2\u4e66|Xiaohongshu)/i;
@@ -449,6 +449,8 @@
     facts.displayAuthor = authorContext?.username || "";
     facts.authorId = authorContext?.userId || "";
     facts.projectId = extractXiaohongshuNoteId(location.href);
+    facts.publishedAt = inferXiaohongshuPublishedAt();
+    facts.publishedDateCode = formatDateCodeYymmdd(facts.publishedAt);
     return normalizeProjectFacts(facts);
   }
 
@@ -2253,6 +2255,7 @@
       debug.xiaohongshu = {
         noteId: extractXiaohongshuNoteId(location.href),
         usernameProbe: collectXiaohongshuUsernameProbeV2(),
+        dateProbe: collectXiaohongshuDateProbe(),
         original: mediaDebug.original,
       };
     }
@@ -2595,6 +2598,160 @@
     return { username, userId };
   }
 
+  function collectXiaohongshuDateProbe() {
+    if (!isXiaohongshuHost()) {
+      return null;
+    }
+
+    const html = document.documentElement?.innerHTML || "";
+    const root = findXiaohongshuPostContainer();
+    const metaCandidates = collectXiaohongshuDateMetaCandidates();
+    const htmlCandidates = collectXiaohongshuDateHtmlCandidates(html);
+    const visibleCandidates = collectXiaohongshuDateVisibleCandidates(root || document.body);
+    const allCandidates = [...metaCandidates, ...htmlCandidates, ...visibleCandidates];
+    const parsedCandidates = [];
+    const seen = new Set();
+
+    allCandidates.forEach((candidate) => {
+      const parsed = parseXiaohongshuDateCandidate(candidate.value);
+      const key = `${candidate.source}:${candidate.label}:${candidate.value}`;
+      if (seen.has(key)) {
+        return;
+      }
+
+      seen.add(key);
+      parsedCandidates.push({
+        ...candidate,
+        dateCode: parsed.dateCode,
+        normalizedDate: parsed.normalizedDate,
+      });
+    });
+
+    const finalCandidate = parsedCandidates.find((item) => item.dateCode) || null;
+    return {
+      locationPath: location.pathname,
+      noteId: extractXiaohongshuNoteId(location.href),
+      finalDateCode: finalCandidate?.dateCode || "",
+      finalNormalizedDate: finalCandidate?.normalizedDate || "",
+      finalSource: finalCandidate?.source || "",
+      finalLabel: finalCandidate?.label || "",
+      metaCandidates: metaCandidates.slice(0, 12),
+      htmlCandidateCount: htmlCandidates.length,
+      visibleCandidateCount: visibleCandidates.length,
+      candidatePreview: parsedCandidates.slice(0, 24),
+    };
+  }
+
+  function inferXiaohongshuPublishedAt() {
+    const probe = collectXiaohongshuDateProbe();
+    return probe?.finalNormalizedDate || "";
+  }
+
+  function collectXiaohongshuDateMetaCandidates() {
+    const candidates = [];
+    document.querySelectorAll("meta, time[datetime]").forEach((node) => {
+      const label = node.getAttribute("property") || node.getAttribute("name") || node.tagName.toLowerCase();
+      const value = node.getAttribute("content") || node.getAttribute("datetime") || "";
+      if (value && isLikelyDateText(value)) {
+        candidates.push({ source: "meta", label, value });
+      }
+    });
+    return candidates;
+  }
+
+  function collectXiaohongshuDateHtmlCandidates(html) {
+    const candidates = [];
+    const patterns = [
+      /"(?:createTime|createdTime|create_time|created_time|publishTime|publish_time|lastUpdateTime|last_update_time|time|timestamp)"\s*:\s*(?:"([^"]{4,40})"|(\d{10,13}))/gi,
+      /(?:发布于|编辑于|发表于|更新于)\s*[:：]?\s*(\d{4}[-/.年]\d{1,2}[-/.月]\d{1,2}日?(?:\s+\d{1,2}:\d{2})?)/g,
+      /(\d{4}[-/.年]\d{1,2}[-/.月]\d{1,2}日?(?:\s+\d{1,2}:\d{2})?)/g,
+    ];
+
+    patterns.forEach((pattern, patternIndex) => {
+      let match;
+      while ((match = pattern.exec(html)) !== null && candidates.length < 80) {
+        const value = match[1] || match[2] || "";
+        if (value && isLikelyDateText(value)) {
+          candidates.push({ source: "html", label: `pattern-${patternIndex + 1}`, value });
+        }
+      }
+    });
+
+    return candidates;
+  }
+
+  function collectXiaohongshuDateVisibleCandidates(root) {
+    const candidates = [];
+    if (!root) {
+      return candidates;
+    }
+
+    const nodes = Array.from(root.querySelectorAll("span, div, time, p"))
+      .slice(0, 500);
+    nodes.forEach((node) => {
+      const text = cleanVisibleText(node.textContent || "");
+      if (!text || text.length > 80 || !isLikelyDateText(text)) {
+        return;
+      }
+
+      candidates.push({
+        source: "visible",
+        label: node.tagName.toLowerCase(),
+        value: text,
+      });
+    });
+
+    return candidates.slice(0, 80);
+  }
+
+  function parseXiaohongshuDateCandidate(value) {
+    const raw = String(value || "").trim();
+    if (!raw) {
+      return { dateCode: "", normalizedDate: "" };
+    }
+
+    if (/^\d{10,13}$/.test(raw)) {
+      const numeric = Number(raw);
+      const date = new Date(raw.length === 10 ? numeric * 1000 : numeric);
+      const dateCode = formatDateCodeYymmdd(date.toISOString());
+      return { dateCode, normalizedDate: dateCode ? date.toISOString() : "" };
+    }
+
+    const fullDateMatch = raw.match(/(20\d{2})[-/.年]\s*(\d{1,2})[-/.月]\s*(\d{1,2})/);
+    if (fullDateMatch) {
+      const year = Number(fullDateMatch[1]);
+      const month = Number(fullDateMatch[2]);
+      const day = Number(fullDateMatch[3]);
+      if (isValidDateParts(year, month, day)) {
+        const normalizedDate = `${year}-${String(month).padStart(2, "0")}-${String(day).padStart(2, "0")}`;
+        return {
+          dateCode: `${String(year).slice(-2)}${String(month).padStart(2, "0")}${String(day).padStart(2, "0")}`,
+          normalizedDate,
+        };
+      }
+    }
+
+    return { dateCode: "", normalizedDate: "" };
+  }
+
+  function isLikelyDateText(value) {
+    const text = String(value || "");
+    return /\d{10,13}|20\d{2}[-/.年]\s*\d{1,2}[-/.月]\s*\d{1,2}|(?:发布于|编辑于|发表于|更新于)/.test(text);
+  }
+
+  function isValidDateParts(year, month, day) {
+    if (year < 2000 || year > 2099 || month < 1 || month > 12 || day < 1 || day > 31) {
+      return false;
+    }
+
+    const date = new Date(Date.UTC(year, month - 1, day));
+    return date.getUTCFullYear() === year && date.getUTCMonth() === month - 1 && date.getUTCDate() === day;
+  }
+
+  function cleanVisibleText(value) {
+    return String(value || "").replace(/\s+/g, " ").trim();
+  }
+
   function findXiaohongshuPostContainer() {
     const selectors = [
       "main",
@@ -2867,7 +3024,7 @@
       }
 
       const parts = parsed.pathname.split("/").filter(Boolean);
-      if (parts.length < 4 || !/^\d{8,14}$/.test(parts[0]) || !/^[0-9a-f]{10,}$/i.test(parts[1])) {
+      if (parts.length < 3 || !/^\d{8,14}$/.test(parts[0]) || !/^[0-9a-f]{10,}$/i.test(parts[1])) {
         return "";
       }
 

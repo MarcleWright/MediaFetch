@@ -40,12 +40,22 @@ chrome.contextMenus.onClicked.addListener((info, tab) => {
   }
 
   const linkUrl = resolveContextMenuTargetUrl(info, tab);
-  enqueueDownloadTask(linkUrl
+  const instagramContext = resolveInstagramContextMenuTarget(linkUrl, tab);
+  if (instagramContext.useCurrentTab) {
+    enqueueDownloadTask({
+      type: "context-tab",
+      tabId: tab.id,
+    });
+    return;
+  }
+
+  const targetUrl = instagramContext.linkUrl || linkUrl;
+  enqueueDownloadTask(targetUrl
     ? {
       type: "context-link",
       sourceTabId: tab.id,
       sourceTabIndex: typeof tab.index === "number" ? tab.index : null,
-      linkUrl,
+      linkUrl: targetUrl,
     }
     : {
       type: "context-tab",
@@ -969,6 +979,76 @@ function resolveContextMenuTargetUrl(info, tab) {
   } catch {
     return "";
   }
+}
+
+function resolveInstagramContextMenuTarget(linkUrl, tab) {
+  if (!linkUrl) {
+    return { useCurrentTab: false, linkUrl: "" };
+  }
+
+  try {
+    const target = new URL(linkUrl);
+    const source = new URL(String(tab?.url || ""));
+    if (!/instagram\.com$/i.test(target.hostname) || !/instagram\.com$/i.test(source.hostname)) {
+      return { useCurrentTab: false, linkUrl };
+    }
+
+    const targetPost = parseInstagramPostPath(target.pathname);
+    const sourcePost = parseInstagramPostPath(source.pathname);
+    if (!targetPost) {
+      return { useCurrentTab: false, linkUrl };
+    }
+
+    if (sourcePost?.postCode && sourcePost.postCode === targetPost.postCode) {
+      return { useCurrentTab: true, linkUrl: "" };
+    }
+
+    if (!targetPost.username) {
+      const sourceUsername = extractInstagramUsernameFromPath(source.pathname);
+      if (sourceUsername) {
+        target.pathname = `/${sourceUsername}/${targetPost.kind}/${targetPost.postCode}`;
+        return { useCurrentTab: false, linkUrl: target.toString() };
+      }
+    }
+
+    return { useCurrentTab: false, linkUrl };
+  } catch {
+    return { useCurrentTab: false, linkUrl };
+  }
+}
+
+function parseInstagramPostPath(pathname) {
+  const normalized = String(pathname || "").replace(/\/+$/, "");
+  let match = normalized.match(/^\/([A-Za-z0-9._-]+)\/(p|reel)\/([^/]+)$/i);
+  if (match) {
+    return {
+      username: match[1],
+      kind: match[2].toLowerCase(),
+      postCode: match[3],
+    };
+  }
+
+  match = normalized.match(/^\/(p|reel)\/([^/]+)$/i);
+  if (match) {
+    return {
+      username: "",
+      kind: match[1].toLowerCase(),
+      postCode: match[2],
+    };
+  }
+
+  return null;
+}
+
+function extractInstagramUsernameFromPath(pathname) {
+  const normalized = String(pathname || "").replace(/\/+$/, "");
+  const match = normalized.match(/^\/([A-Za-z0-9._-]+)(?:\/)?$/);
+  if (!match) {
+    return "";
+  }
+
+  const username = match[1];
+  return /^(?:p|reel|explore|accounts|direct|stories)$/i.test(username) ? "" : username;
 }
 
 function showActionStatus(text, color) {
