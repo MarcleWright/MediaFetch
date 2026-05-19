@@ -658,6 +658,34 @@ Chrome-plugin Xiaohongshu extraction should:
 4. Exclude profile-linked images and obvious utility assets from the Xiaohongshu `Original` set.
 5. Use the whitelist only for `Original` labeling; do not hide other extracted images.
 
+Current Xiaohongshu original-image finding:
+
+1. Treat rendered `sns-webpic*.xhscdn.com` note images as the trusted boundary source.
+2. For each trusted rendered note image, derive an enlarged candidate URL using the Eagle-style CDN rewrite:
+   - source form: `https://sns-webpic-qc.xhscdn.com/{date}/{hash}/{path}/{file}!{display-transform}`
+   - enlarged form: `https://sns-img-al.xhscdn.com/{path}/{file}`
+3. Validate the enlarged URL by loading it as an image before using it.
+4. Use the enlarged URL only when validation succeeds; otherwise fall back to the rendered WebP display URL.
+5. Carry probed width, height, and inferred format into the displayed result when available.
+6. Infer the saved file extension from the validated image content type when available; if the URL has no extension, use the verified response format instead of defaulting to the display WebP assumption.
+7. Run enlarged URL validation with bounded concurrency so large notes do not create an uncontrolled burst of image probes.
+8. Keep HTML/script URL scanning as a debug probe only. Do not let broad HTML scans replace the note media set because they can include app JavaScript, static assets, avatars, comments, or unrelated page resources.
+
+Eagle comparison findings:
+
+- Eagle's Xiaohongshu site plugin mainly handles video metadata from `noteDetailMap`.
+- Eagle's higher-resolution Xiaohongshu still image behavior comes from its generic URL enlarger, not from direct PNG/JPG URLs in page HTML.
+- The relevant rule rewrites `sns-webpic-qc.xhscdn.com` display URLs to `sns-img-al.xhscdn.com` source-like URLs and strips the `!nd_*_webp_*` display transform.
+- Eagle validates enlarged URLs before accepting them and can obtain real dimensions by loading the candidate image.
+- MediaFetch should follow the same principle: derive from already-confirmed note images, validate the enlarged URL, then annotate debug with both the source URL and the accepted or rejected enlarged URL.
+
+Required Xiaohongshu debug fields:
+
+- rendered candidate preview with URL and rendered dimensions
+- enlarged candidate preview with source URL, enlarged URL, validation result, dimensions, and content type when available
+- HTML scan counts and previews for diagnosis only
+- final accepted URL preview
+
 #### Author Extraction
 
 When Xiaohongshu author identity is needed for folder naming or `metadata.json`, use this priority:

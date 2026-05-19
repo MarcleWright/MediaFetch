@@ -1,5 +1,5 @@
 (() => {
-  const CONTENT_BUILD_HASH = "1125";
+  const CONTENT_BUILD_HASH = "1130";
   const XIAOHONGSHU_DISPLAY_NAME = "\u5c0f\u7ea2\u4e66";
   const XIAOHONGSHU_SUFFIX_PATTERN = /\s*[|\-]\s*(?:\u5c0f\u7ea2\u4e66|Xiaohongshu)\b.*$/i;
   const XIAOHONGSHU_TITLE_PATTERN = /^(.{1,80}?)\s*(?:\u7684|on)\s*(?:\u5c0f\u7ea2\u4e66|Xiaohongshu)/i;
@@ -200,8 +200,8 @@
 
       const item = {
         url,
-        thumbnail: url,
-        format: inferFormat(url),
+        thumbnail: options.thumbnail || url,
+        format: options.format || inferFormat(url),
         resolution: width && height ? `${width} x ${height}` : "Unknown",
         size: "Unknown",
         width,
@@ -231,7 +231,9 @@
 
     if ((/(instagram\.com|behance\.net|weibo\.com)$/i.test(location.hostname) || isXiaohongshuHost()) && domainOriginalUrls?.size) {
       domainOriginalUrls.forEach((url) => {
+        const originalMeta = platformMedia.originalUrlMeta?.get?.(url) || {};
         push(url, {
+          ...originalMeta,
           sourceHint: /behance\.net$/i.test(location.hostname)
             ? "behance-original"
             : /weibo\.com$/i.test(location.hostname)
@@ -1867,6 +1869,7 @@
     return {
       originalUrls: null,
       originalMediaKeys: null,
+      originalUrlMeta: null,
       debug: {},
     };
   }
@@ -1910,14 +1913,13 @@
     return media;
   }
 
-  function collectXiaohongshuOriginalMedia() {
+  async function collectXiaohongshuOriginalMedia() {
     const media = createEmptyPlatformMedia();
     if (!isXiaohongshuHost()) {
       return media;
     }
 
     const root = findXiaohongshuPostContainer();
-    const urls = new Set();
     const candidateImages = root ? collectVisualCandidates(root, {
       minArea: 50000,
       isAllowed: (img, candidate) =>
@@ -1927,17 +1929,32 @@
     }) : [];
 
     const mediaCandidates = selectXiaohongshuPostMediaCandidates(candidateImages);
-    createUrlSetFromCandidates(mediaCandidates).forEach((url) => {
-      const normalized = normalizeXiaohongshuImageUrl(url);
-      if (normalized) urls.add(normalized);
-    });
+    const htmlProbe = collectXiaohongshuHighResUrlsFromHtml();
+    const htmlHighResUrls = htmlProbe.urls;
+    const enlargement = await collectXiaohongshuEnlargedMedia(mediaCandidates);
+    const urls = enlargement.urls;
 
     media.originalUrls = urls.size ? urls : null;
+    media.originalUrlMeta = enlargement.meta.size ? enlargement.meta : null;
     media.debug.original = {
       containerFound: !!root,
       containerTag: root ? root.tagName : null,
       candidateCount: candidateImages.length,
       clusterCount: mediaCandidates.length,
+      renderedCandidatePreview: mediaCandidates.slice(0, 6).map((candidate) => ({
+        url: normalizeXiaohongshuImageUrl(candidate.img.currentSrc || candidate.img.src || ""),
+        width: candidate.width,
+        height: candidate.height,
+      })),
+      htmlRawCandidateCount: htmlProbe.rawCount,
+      htmlImageCandidateCount: htmlProbe.imageCount,
+      htmlHighResCount: htmlHighResUrls.size,
+      htmlRawPreview: htmlProbe.rawPreview,
+      htmlHighResPreview: Array.from(htmlHighResUrls).slice(0, 6),
+      htmlRejectedPreview: htmlProbe.rejectedPreview,
+      enlargedCandidateCount: enlargement.probes.length,
+      enlargedAcceptedCount: enlargement.probes.filter((item) => item.accepted).length,
+      enlargedPreview: enlargement.probes.slice(0, 6),
       urlCount: urls.size,
       preview: Array.from(urls).slice(0, 6),
     };
@@ -2723,11 +2740,246 @@
 
       parsed.hash = "";
       parsed.search = "";
-      parsed.pathname = parsed.pathname.replace(/!.+$/i, "");
       return parsed.toString();
     } catch {
-      return normalized.replace(/([?#].*)$/, "").replace(/!.+$/i, "");
+      return normalized.replace(/([?#].*)$/, "");
     }
+  }
+
+  function collectXiaohongshuHighResUrlsFromHtml() {
+    const urls = new Set();
+    const rawPreview = [];
+    const rejectedPreview = [];
+    let rawCount = 0;
+    let imageCount = 0;
+    const html = document.documentElement?.innerHTML || "";
+    if (!html) {
+      return { urls, rawCount, imageCount, rawPreview, rejectedPreview };
+    }
+
+    const patterns = [
+      /https?:\\?\/\\?\/[^"'\\\s<>]+(?:xhscdn\.com|snsimg\.cn)\\?\/[^"'\s<>)]+/gi,
+      /https?:\/\/[^"'\s<>]+(?:xhscdn\.com|snsimg\.cn)\/[^"'\s<>)]+/gi,
+    ];
+
+    patterns.forEach((pattern) => {
+      let match;
+      while ((match = pattern.exec(html)) !== null) {
+        const normalized = normalizeXiaohongshuImageUrl(decodeEscapedUrl(match[0]));
+        if (!normalized) {
+          continue;
+        }
+
+        rawCount += 1;
+        if (rawPreview.length < 8) {
+          rawPreview.push(normalized);
+        }
+
+        if (!isXiaohongshuImageCdnUrl(normalized) || isLikelyXiaohongshuNonContentUrl(normalized)) {
+          if (rejectedPreview.length < 8) {
+            rejectedPreview.push(normalized);
+          }
+          continue;
+        }
+
+        imageCount += 1;
+        if (isLikelyXiaohongshuHighResUrl(normalized)) {
+          urls.add(normalized);
+        } else if (rejectedPreview.length < 8) {
+          rejectedPreview.push(normalized);
+        }
+      }
+    });
+
+    return { urls, rawCount, imageCount, rawPreview, rejectedPreview };
+  }
+
+  async function collectXiaohongshuEnlargedMedia(mediaCandidates) {
+    const urls = new Set();
+    const meta = new Map();
+    const candidates = mediaCandidates.slice(0, 30);
+    const probes = await mapWithConcurrency(candidates, 4, async (candidate) => {
+      const sourceUrl = normalizeXiaohongshuImageUrl(candidate.img.currentSrc || candidate.img.src || "");
+      if (!sourceUrl) {
+        return null;
+      }
+
+      const enlargedUrl = buildXiaohongshuEnlargedImageUrl(sourceUrl);
+      const probe = enlargedUrl ? await probeImageResource(enlargedUrl, 2500) : null;
+      const accepted = !!probe?.loaded;
+      const finalUrl = accepted ? enlargedUrl : sourceUrl;
+      const width = accepted ? (probe.width || probe.responseWidth || 0) : candidate.width;
+      const height = accepted ? (probe.height || probe.responseHeight || 0) : candidate.height;
+      const format = accepted ? inferFormatFromUrlOrProbe(enlargedUrl, probe) : inferFormat(sourceUrl);
+
+      return {
+        finalUrl,
+        sourceUrl,
+        enlargedUrl,
+        accepted,
+        width,
+        height,
+        format,
+        contentType: probe?.contentType || "",
+      };
+    });
+
+    probes.filter(Boolean).forEach((item) => {
+      urls.add(item.finalUrl);
+      meta.set(item.finalUrl, {
+        thumbnail: item.sourceUrl,
+        width: item.width,
+        height: item.height,
+        format: item.format,
+      });
+    });
+
+    return { urls, meta, probes: probes.filter(Boolean) };
+  }
+
+  async function mapWithConcurrency(items, limit, worker) {
+    const source = Array.isArray(items) ? items : [];
+    const results = new Array(source.length);
+    const workerCount = Math.max(1, Math.min(Number(limit || 1), source.length || 1));
+    let nextIndex = 0;
+
+    await Promise.all(Array.from({ length: workerCount }, async () => {
+      while (nextIndex < source.length) {
+        const index = nextIndex;
+        nextIndex += 1;
+        results[index] = await worker(source[index], index);
+      }
+    }));
+
+    return results;
+  }
+
+  function buildXiaohongshuEnlargedImageUrl(rawUrl) {
+    const sourceUrl = normalizeXiaohongshuImageUrl(rawUrl);
+    if (!sourceUrl) {
+      return "";
+    }
+
+    try {
+      const parsed = new URL(sourceUrl);
+      if (!/^sns-webpic(?:-[a-z0-9-]+)?\.xhscdn\.com$/i.test(parsed.hostname)) {
+        return "";
+      }
+
+      const parts = parsed.pathname.split("/").filter(Boolean);
+      if (parts.length < 4 || !/^\d{8,14}$/.test(parts[0]) || !/^[0-9a-f]{10,}$/i.test(parts[1])) {
+        return "";
+      }
+
+      const imagePath = parts.slice(2).join("/").replace(/!.+$/i, "");
+      if (!imagePath || /\.(?:js|css|mjs|map|woff2?|ttf|otf)$/i.test(imagePath)) {
+        return "";
+      }
+
+      return `https://sns-img-al.xhscdn.com/${imagePath}`;
+    } catch {
+      return "";
+    }
+  }
+
+  async function probeImageResource(url, timeoutMs = 2500) {
+    const [dimensions, responseInfo] = await Promise.all([
+      probeImageDimensions(url, timeoutMs),
+      probeImageResponseInfo(url, timeoutMs),
+    ]);
+
+    return {
+      ...dimensions,
+      contentType: responseInfo.contentType,
+      responseWidth: responseInfo.width,
+      responseHeight: responseInfo.height,
+    };
+  }
+
+  function probeImageDimensions(url, timeoutMs = 2500) {
+    return new Promise((resolve) => {
+      const img = new Image();
+      const done = (result) => {
+        clearTimeout(timer);
+        img.onload = null;
+        img.onerror = null;
+        resolve(result);
+      };
+      const timer = setTimeout(() => done({ loaded: false, error: "timeout" }), timeoutMs);
+      img.onload = () => done({
+        loaded: true,
+        width: img.naturalWidth || img.width || 0,
+        height: img.naturalHeight || img.height || 0,
+      });
+      img.onerror = () => done({ loaded: false, error: "load-error" });
+      img.decoding = "async";
+      img.src = url;
+    });
+  }
+
+  async function probeImageResponseInfo(url, timeoutMs = 2500) {
+    const controller = new AbortController();
+    const timer = setTimeout(() => controller.abort(), timeoutMs);
+    try {
+      const response = await fetch(url, {
+        method: "HEAD",
+        credentials: "omit",
+        cache: "no-store",
+        signal: controller.signal,
+      });
+
+      return {
+        contentType: String(response.headers.get("content-type") || "").toLowerCase(),
+        width: Number(response.headers.get("x-width") || 0),
+        height: Number(response.headers.get("x-height") || 0),
+      };
+    } catch {
+      return { contentType: "", width: 0, height: 0 };
+    } finally {
+      clearTimeout(timer);
+    }
+  }
+
+  function inferFormatFromUrlOrProbe(url, probe) {
+    const contentType = String(probe?.contentType || "").toLowerCase();
+    if (contentType.includes("png")) return "PNG";
+    if (contentType.includes("jpeg") || contentType.includes("jpg")) return "JPEG";
+    if (contentType.includes("webp")) return "WEBP";
+    if (contentType.includes("avif")) return "AVIF";
+    const format = inferFormat(url);
+    return format === "Unknown" ? "JPEG" : format;
+  }
+
+  function isLikelyXiaohongshuHighResUrl(rawUrl) {
+    const value = String(rawUrl || "").toLowerCase();
+    return (
+      /\.(?:png|jpe?g|webp|avif)(?:$|[?#!])/i.test(value) ||
+      /!(?:[^/?#]*_)?(?:png|jpe?g|webp|avif)(?:_|$)/i.test(value) ||
+      /(?:origin|original|raw|source|large|w[hl]teh|wgth|spectrum)/i.test(value)
+    );
+  }
+
+  function isXiaohongshuImageCdnUrl(rawUrl) {
+    try {
+      const parsed = new URL(rawUrl);
+      const host = parsed.hostname.toLowerCase();
+      const path = parsed.pathname.toLowerCase();
+      if (/\.(?:js|css|mjs|map|woff2?|ttf|otf)(?:$|[?#])/i.test(path)) {
+        return false;
+      }
+
+      return (
+        /^sns-webpic(?:-[a-z0-9-]+)?\.xhscdn\.com$/i.test(host) ||
+        /^sns-img(?:-[a-z0-9-]+)?\.xhscdn\.com$/i.test(host) ||
+        /(^|\.)snsimg\.cn$/i.test(host)
+      );
+    } catch {
+      return false;
+    }
+  }
+
+  function isLikelyXiaohongshuNonContentUrl(rawUrl) {
+    return /avatar|icon|emoji|emoticon|badge|sprite|logo|qrcode|qr-code|\/resource\/(?:js|css|font)\//i.test(String(rawUrl || ""));
   }
 
   function selectWeiboPostMediaCandidates(candidates) {
@@ -3858,12 +4110,16 @@
 
   function inferFormat(url) {
     const pathname = new URL(url).pathname.toLowerCase();
+    const fullUrl = String(url || "").toLowerCase();
     if (pathname.endsWith(".png")) return "PNG";
     if (pathname.endsWith(".jpg") || pathname.endsWith(".jpeg")) return "JPEG";
     if (pathname.endsWith(".gif")) return "GIF";
     if (pathname.endsWith(".webp")) return "WEBP";
     if (pathname.endsWith(".svg")) return "SVG";
     if (pathname.endsWith(".avif")) return "AVIF";
+    if (/!(?:[^/?#]*_)?webp(?:_|$)/i.test(fullUrl)) return "WEBP";
+    if (/!(?:[^/?#]*_)?jpg(?:_|$)|!(?:[^/?#]*_)?jpeg(?:_|$)/i.test(fullUrl)) return "JPEG";
+    if (/!(?:[^/?#]*_)?png(?:_|$)/i.test(fullUrl)) return "PNG";
     return "Unknown";
   }
 })();

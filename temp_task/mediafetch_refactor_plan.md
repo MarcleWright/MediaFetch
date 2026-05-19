@@ -700,3 +700,49 @@ Implementation notes:
 - Updated `collectProjectIdentityFacts()` to dispatch through `adapter.extractFacts`.
 - Updated `collectPlatformMedia()` to dispatch through `adapter.collectMedia`.
 - Kept debug building, download strategy, popup/background orchestration, and physical file layout unchanged.
+
+## Xiaohongshu Original URL Follow-Up
+
+Status: in progress.
+
+Observed issue:
+
+- DOM extraction finds the note images, but many URLs are rendered WebP display variants such as `sns-webpic-qc.xhscdn.com/...!nd_dft_*_webp_3`.
+- Removing the `!nd_*` transform from the same host can return `403`, so naked display-host URLs are not reliable.
+- Broad HTML/script scanning can find many `xhscdn.com` URLs but can also match app JavaScript, static resources, avatars, comments, and unrelated assets.
+- Eagle can obtain larger Xiaohongshu images for the same note, with real dimensions visible after loading.
+
+Eagle-derived finding:
+
+- Eagle's Xiaohongshu plugin mainly handles video extraction from `noteDetailMap`.
+- Still-image enlargement is handled by Eagle's generic URL enlarger.
+- The relevant rule rewrites a trusted rendered display URL:
+
+```text
+https://sns-webpic-qc.xhscdn.com/{date}/{hash}/{path}/{file}!{display-transform}
+```
+
+to:
+
+```text
+https://sns-img-al.xhscdn.com/{path}/{file}
+```
+
+- Eagle validates the enlarged candidate before using it.
+
+MediaFetch implementation direction:
+
+1. Use the current note's rendered image cluster as the trusted boundary.
+2. For each trusted rendered `sns-webpic*.xhscdn.com` URL, generate the `sns-img-al.xhscdn.com` enlarged candidate.
+3. Load-probe the enlarged candidate before accepting it.
+4. Use accepted enlarged candidates as the Xiaohongshu `Original` whitelist.
+5. Fall back per image to the rendered WebP URL if enlargement fails.
+6. Keep HTML/script scanning as debug evidence only, not as the source of final originals.
+7. Include debug fields for source URL, enlarged URL, accepted state, dimensions, and content type when available.
+8. Limit enlarged URL probe concurrency to keep large notes responsive and avoid bursty network behavior.
+9. Prefer probed `Content-Type` for file format/extension inference when the enlarged URL has no filename extension.
+
+Architectural note:
+
+- This belongs in the platform media layer, not the generic download layer.
+- The download layer should continue to handle fetch/direct transport decisions, but it should not know how to rewrite Xiaohongshu image URLs.
