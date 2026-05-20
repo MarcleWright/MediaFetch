@@ -113,6 +113,28 @@ chrome.runtime.onMessage.addListener((message, _sender, sendResponse) => {
     });
     return;
   }
+
+  if (message?.type === "mediafetch:enqueue-link-download") {
+    const targetUrl = normalizeHttpUrl(message.linkUrl || "");
+    if (!targetUrl) {
+      sendResponse({ ok: false, error: "Invalid link URL." });
+      return;
+    }
+
+    const taskId = enqueueDownloadTask({
+      type: "context-link",
+      sourceTabId: Number(message.sourceTabId || 0) || null,
+      sourceTabIndex: Number.isFinite(message.sourceTabIndex) ? Number(message.sourceTabIndex) : null,
+      linkUrl: targetUrl,
+    });
+    sendResponse({
+      ok: true,
+      taskId,
+      queuedAhead: Math.max(0, downloadTaskQueue.length - 1),
+      active: !!activeDownloadTask,
+    });
+    return;
+  }
 });
 
 chrome.downloads.onDeterminingFilename.addListener((downloadItem, suggest) => {
@@ -175,7 +197,7 @@ async function downloadOriginalsFromTab(tab) {
     folderName: folder,
     imageCount: originals.length,
     originalCount: originals.length,
-    pluginVersion: "0.1.4",
+    pluginVersion: "0.2.0",
   });
   await downloadImageBatch(originals, {
     folder,
@@ -222,7 +244,7 @@ async function downloadSelectionTask(task) {
     folderName: folder,
     imageCount: selected.length,
     originalCount,
-    pluginVersion: "0.1.4",
+    pluginVersion: "0.2.0",
   });
   await downloadImageBatch(selected, {
     folder,
@@ -345,6 +367,8 @@ function inferMimeTypeFromFilename(filename) {
   if (extension === "webp") return "image/webp";
   if (extension === "gif") return "image/gif";
   if (extension === "avif") return "image/avif";
+  if (extension === "heic") return "image/heic";
+  if (extension === "heif") return "image/heif";
   if (extension === "svg") return "image/svg+xml";
   return "image/jpeg";
 }
@@ -910,7 +934,7 @@ function buildDownloadMetadata(baseMetadata, options) {
     downloadedAt: new Date().toISOString(),
     imageCount: Number(options.imageCount || 0),
     originalCount: Number(options.originalCount || 0),
-    pluginVersion: options.pluginVersion || "0.1.4",
+    pluginVersion: options.pluginVersion || "0.2.0",
   };
 }
 
@@ -921,6 +945,7 @@ function inferExtension(url, format) {
   if (format === "WEBP") return "webp";
   if (format === "SVG") return "svg";
   if (format === "AVIF") return "avif";
+  if (format === "HEIC") return "heic";
 
   try {
     const pathname = new URL(url).pathname;

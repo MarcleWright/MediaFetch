@@ -1,5 +1,5 @@
 (() => {
-  const CONTENT_BUILD_HASH = "1132";
+  const CONTENT_BUILD_HASH = "1133";
   const XIAOHONGSHU_DISPLAY_NAME = "\u5c0f\u7ea2\u4e66";
   const XIAOHONGSHU_SUFFIX_PATTERN = /\s*[|\-]\s*(?:\u5c0f\u7ea2\u4e66|Xiaohongshu)\b.*$/i;
   const XIAOHONGSHU_TITLE_PATTERN = /^(.{1,80}?)\s*(?:\u7684|on)\s*(?:\u5c0f\u7ea2\u4e66|Xiaohongshu)/i;
@@ -2963,11 +2963,20 @@
 
       const enlargedUrl = buildXiaohongshuEnlargedImageUrl(sourceUrl);
       const probe = enlargedUrl ? await probeImageResource(enlargedUrl, 2500) : null;
-      const accepted = !!probe?.loaded;
+      const accepted = isAcceptableXiaohongshuEnlargedProbe(probe);
       const finalUrl = accepted ? enlargedUrl : sourceUrl;
-      const width = accepted ? (probe.width || probe.responseWidth || 0) : candidate.width;
-      const height = accepted ? (probe.height || probe.responseHeight || 0) : candidate.height;
+      const loadedWidth = Number(probe?.width || 0);
+      const loadedHeight = Number(probe?.height || 0);
+      const responseWidth = Number(probe?.responseWidth || 0);
+      const responseHeight = Number(probe?.responseHeight || 0);
+      const verifiedWidth = loadedWidth || responseWidth || 0;
+      const verifiedHeight = loadedHeight || responseHeight || 0;
+      const width = accepted ? verifiedWidth : candidate.width;
+      const height = accepted ? verifiedHeight : candidate.height;
       const format = accepted ? inferFormatFromUrlOrProbe(enlargedUrl, probe) : inferFormat(sourceUrl);
+      const dimensionSource = accepted
+        ? (loadedWidth && loadedHeight ? "image-load" : (responseWidth && responseHeight ? "headers" : "unknown"))
+        : "rendered-fallback";
 
       return {
         finalUrl,
@@ -2978,6 +2987,9 @@
         height,
         format,
         contentType: probe?.contentType || "",
+        dimensionSource,
+        renderedWidth: candidate.width,
+        renderedHeight: candidate.height,
       };
     });
 
@@ -2985,13 +2997,22 @@
       urls.add(item.finalUrl);
       meta.set(item.finalUrl, {
         thumbnail: item.sourceUrl,
-        width: item.width,
-        height: item.height,
+        width: item.dimensionSource === "unknown" ? 0 : item.width,
+        height: item.dimensionSource === "unknown" ? 0 : item.height,
         format: item.format,
       });
     });
 
     return { urls, meta, probes: probes.filter(Boolean) };
+  }
+
+  function isAcceptableXiaohongshuEnlargedProbe(probe) {
+    if (probe?.loaded) {
+      return true;
+    }
+
+    const contentType = String(probe?.contentType || "").toLowerCase();
+    return contentType.includes("image/heic") || contentType.includes("image/heif");
   }
 
   async function mapWithConcurrency(items, limit, worker) {
@@ -3103,6 +3124,7 @@
     if (contentType.includes("jpeg") || contentType.includes("jpg")) return "JPEG";
     if (contentType.includes("webp")) return "WEBP";
     if (contentType.includes("avif")) return "AVIF";
+    if (contentType.includes("heic") || contentType.includes("heif")) return "HEIC";
     const format = inferFormat(url);
     return format === "Unknown" ? "JPEG" : format;
   }
@@ -4274,6 +4296,7 @@
     if (pathname.endsWith(".webp")) return "WEBP";
     if (pathname.endsWith(".svg")) return "SVG";
     if (pathname.endsWith(".avif")) return "AVIF";
+    if (pathname.endsWith(".heic") || pathname.endsWith(".heif")) return "HEIC";
     if (/!(?:[^/?#]*_)?webp(?:_|$)/i.test(fullUrl)) return "WEBP";
     if (/!(?:[^/?#]*_)?jpg(?:_|$)|!(?:[^/?#]*_)?jpeg(?:_|$)/i.test(fullUrl)) return "JPEG";
     if (/!(?:[^/?#]*_)?png(?:_|$)/i.test(fullUrl)) return "PNG";

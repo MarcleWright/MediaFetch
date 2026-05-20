@@ -11,7 +11,7 @@
     <header class="hero">
       <div class="heroTop">
         <h1>MediaFetch</h1>
-        <span class="version">v0.1.4</span>
+        <span class="version">v0.2.0</span>
       </div>
       <p>Extract images from the current tab using your logged-in browser session.</p>
     </header>
@@ -23,10 +23,18 @@
       <button id="selectOriginalBtn" type="button" disabled>Select Original</button>
     </section>
 
+    <section id="clipboardBox" class="clipboardBox">
+      <label for="clipboardUrlInput">Link</label>
+      <div class="clipboardRow">
+        <input id="clipboardUrlInput" type="text" placeholder="Paste URL" />
+        <button id="clipboardDownloadBtn" type="button">Download</button>
+      </div>
+      <div id="clipboardUrl" class="clipboardUrl"></div>
+    </section>
+
     <section class="folderBox">
       <label for="folderName">Folder Name</label>
       <input id="folderName" type="text" placeholder="ProjectsA" />
-      <div class="hint">Downloads will be saved under your default Chrome downloads folder in <code>Folder Name/</code>.</div>
     </section>
 
     <section class="summary">

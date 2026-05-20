@@ -10,6 +10,9 @@ const selectAllBtn = document.getElementById("selectAllBtn");
 const clearBtn = document.getElementById("clearBtn");
 const selectOriginalBtn = document.getElementById("selectOriginalBtn");
 const downloadBtn = document.getElementById("downloadBtn");
+const clipboardUrlInput = document.getElementById("clipboardUrlInput");
+const clipboardUrlEl = document.getElementById("clipboardUrl");
+const clipboardDownloadBtn = document.getElementById("clipboardDownloadBtn");
 const folderNameInput = document.getElementById("folderName");
 const selectionStatus = document.getElementById("selectionStatus");
 const statusEl = document.getElementById("status");
@@ -18,6 +21,7 @@ const toggleDebugBtn = document.getElementById("toggleDebugBtn");
 const debugInfoEl = document.getElementById("debugInfo");
 const copyDebugBtn = document.getElementById("copyDebugBtn");
 const resultsEl = document.getElementById("results");
+let clipboardLinkUrl = "";
 
 folderNameInput.addEventListener("input", () => {
   state.folderTouched = true;
@@ -47,13 +51,48 @@ selectOriginalBtn.addEventListener("click", () => {
   render();
 });
 downloadBtn.addEventListener("click", downloadSelected);
+clipboardDownloadBtn.addEventListener("click", downloadClipboardWeiboOriginal);
+clipboardUrlInput.addEventListener("input", () => {
+  updateClipboardLinkState(clipboardUrlInput.value);
+});
 copyDebugBtn.addEventListener("click", copyDebugInfo);
 toggleDebugBtn.addEventListener("click", toggleDebugSection);
 
 initializePopup();
 
 async function initializePopup() {
+  await hydrateClipboardSection();
   extractFromCurrentTab();
+}
+
+async function hydrateClipboardSection() {
+  try {
+    if (!navigator.clipboard?.readText) {
+      renderClipboardLink("");
+      return;
+    }
+
+    const text = String(await navigator.clipboard.readText() || "").trim();
+    renderClipboardLink(text);
+  } catch {
+    renderClipboardLink("");
+  }
+}
+
+function renderClipboardLink(url) {
+  clipboardUrlInput.value = String(url || "");
+  updateClipboardLinkState(clipboardUrlInput.value);
+}
+
+function updateClipboardLinkState(rawValue) {
+  const normalized = normalizeHttpUrl(rawValue);
+  clipboardLinkUrl = normalized;
+  clipboardDownloadBtn.disabled = !clipboardLinkUrl;
+  clipboardUrlEl.textContent = clipboardLinkUrl
+    ? ""
+    : rawValue
+      ? "Invalid URL."
+      : "";
 }
 
 async function extractFromCurrentTab() {
@@ -71,7 +110,7 @@ async function extractFromCurrentTab() {
       phase: "request-extraction",
       tabId: tab.id,
       tabUrl: tab.url || "",
-      version: "0.1.4",
+      version: "0.2.0",
     });
 
     const instagramNav = await resolveInstagramNavigationContext(tab);
@@ -115,7 +154,7 @@ async function extractFromCurrentTab() {
     state.metadata = response.metadata || null;
     const debug = response.debug || {};
     debug.client = {
-      version: "0.1.4",
+      version: "0.2.0",
       probeError,
       instagramSamplingError,
       weiboSamplingError,
@@ -142,7 +181,7 @@ async function extractFromCurrentTab() {
     state.images = [];
     renderDebugInfo({
       phase: "error",
-      version: "0.1.4",
+      version: "0.2.0",
       error: error instanceof Error ? error.message : String(error),
     });
     render();
@@ -623,6 +662,36 @@ async function downloadSelected() {
   setStatus(`Download started for ${selected.length} image(s) in "${folder}".`);
 }
 
+async function downloadClipboardWeiboOriginal() {
+  if (!clipboardLinkUrl) {
+    return;
+  }
+
+  clipboardDownloadBtn.disabled = true;
+  setStatus("Queueing Weibo Original download...");
+
+  try {
+    const [tab] = await chrome.tabs.query({ active: true, currentWindow: true });
+    const result = await enqueueLinkDownload({
+      linkUrl: clipboardLinkUrl,
+      sourceTabId: tab?.id || 0,
+      sourceTabIndex: typeof tab?.index === "number" ? tab.index : null,
+    });
+    const queuedAhead = Number(result?.queuedAhead || 0);
+    setStatus(
+      result?.active || queuedAhead > 0
+        ? `Queued Weibo Original download. ${queuedAhead} task(s) ahead.`
+        : "Weibo Original download started."
+    );
+    window.close();
+  } catch (error) {
+    const message = error instanceof Error ? error.message : String(error);
+    setStatus(`Clipboard download failed: ${message}`, true);
+  } finally {
+    clipboardDownloadBtn.disabled = !clipboardLinkUrl;
+  }
+}
+
 function prepareDownloads(urls, fileNames, pageUrl) {
   return new Promise((resolve) => {
     chrome.runtime.sendMessage({ type: "mediafetch:prepare-downloads", urls, fileNames, pageUrl }, () => {
@@ -745,7 +814,7 @@ function buildDownloadMetadata(baseMetadata, options) {
     downloadedAt: new Date().toISOString(),
     imageCount: Number(options.imageCount || 0),
     originalCount: Number(options.originalCount || 0),
-    pluginVersion: options.pluginVersion || "0.1.4",
+    pluginVersion: options.pluginVersion || "0.2.0",
   };
 }
 
@@ -768,12 +837,48 @@ function enqueueSelectionDownload(payload) {
   });
 }
 
+function enqueueLinkDownload(payload) {
+  return new Promise((resolve, reject) => {
+    chrome.runtime.sendMessage({ type: "mediafetch:enqueue-link-download", ...payload }, (response) => {
+      const error = chrome.runtime.lastError;
+      if (error) {
+        reject(new Error(error.message));
+        return;
+      }
+
+      if (!response?.ok) {
+        reject(new Error(response?.error || "Failed to queue link download."));
+        return;
+      }
+
+      resolve(response);
+    });
+  });
+}
+
 function isSinaimgUrl(url) {
   try {
     const parsed = new URL(url);
     return /(^|\.)sinaimg\.cn$/i.test(parsed.hostname);
   } catch {
     return false;
+  }
+}
+
+function normalizeHttpUrl(value) {
+  const raw = String(value || "").trim();
+  if (!raw) {
+    return "";
+  }
+
+  try {
+    const parsed = new URL(raw);
+    if (!/^https?:$/i.test(parsed.protocol)) {
+      return "";
+    }
+    return parsed.toString();
+  } catch {
+    return "";
   }
 }
 
@@ -884,6 +989,7 @@ function inferExtension(url, format) {
   if (format === "WEBP") return "webp";
   if (format === "SVG") return "svg";
   if (format === "AVIF") return "avif";
+  if (format === "HEIC") return "heic";
 
   try {
     const pathname = new URL(url).pathname;

@@ -664,8 +664,10 @@ Current Xiaohongshu original-image finding:
 2. For each trusted rendered note image, derive an enlarged candidate URL using the Eagle-style CDN rewrite:
    - source form: `https://sns-webpic-qc.xhscdn.com/{date}/{hash}/{path}/{file}!{display-transform}`
    - enlarged form: `https://sns-img-al.xhscdn.com/{path}/{file}`
-3. Validate the enlarged URL by loading it as an image before using it.
-4. Use the enlarged URL only when validation succeeds; otherwise fall back to the rendered WebP display URL.
+3. Validate the enlarged URL before using it.
+   - browser-decodable formats should load successfully as an image
+   - `image/heic` and `image/heif` responses may be accepted from response headers even when the browser image decoder cannot preview them
+4. Use the enlarged URL when validation succeeds, including accepted HEIC/HEIF source files; otherwise fall back to the rendered WebP display URL.
 5. Carry probed width, height, and inferred format into the displayed result when available.
 6. Infer the saved file extension from the validated image content type when available; if the URL has no extension, use the verified response format instead of defaulting to the display WebP assumption.
 7. Run enlarged URL validation with bounded concurrency so large notes do not create an uncontrolled burst of image probes.
