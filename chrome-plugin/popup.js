@@ -16,12 +16,26 @@ const clipboardDownloadBtn = document.getElementById("clipboardDownloadBtn");
 const folderNameInput = document.getElementById("folderName");
 const selectionStatus = document.getElementById("selectionStatus");
 const statusEl = document.getElementById("status");
+const lineageBoxEl = document.getElementById("lineageBox");
+const lineageEnabledInput = document.getElementById("lineageEnabled");
+const lineageRefreshBtn = document.getElementById("lineageRefreshBtn");
+const lineageProbeBtn = document.getElementById("lineageProbeBtn");
+const lineageFolderSelect = document.getElementById("lineageFolderSelect");
+const lineageSaveSelectedBtn = document.getElementById("lineageSaveSelectedBtn");
+const lineageSaveOriginalBtn = document.getElementById("lineageSaveOriginalBtn");
+const lineageStatusEl = document.getElementById("lineageStatus");
+const lineageDebugBoxEl = document.getElementById("lineageDebugBox");
+const lineageDebugInfoEl = document.getElementById("lineageDebugInfo");
 const debugBoxEl = document.getElementById("debugBox");
 const toggleDebugBtn = document.getElementById("toggleDebugBtn");
 const debugInfoEl = document.getElementById("debugInfo");
 const copyDebugBtn = document.getElementById("copyDebugBtn");
 const resultsEl = document.getElementById("results");
 let clipboardLinkUrl = "";
+const features = globalThis.MEDIAFETCH_FEATURES || {};
+const lineageFeatureEnabled = !!features.lineageIntegration;
+const defaultLineageBaseUrl = normalizeLineageBaseUrl(features.defaultLineageBaseUrl || "http://127.0.0.1:17321");
+const defaultLineageToken = String(features.defaultLineageToken || "").trim();
 
 folderNameInput.addEventListener("input", () => {
   state.folderTouched = true;
@@ -57,12 +71,30 @@ clipboardUrlInput.addEventListener("input", () => {
 });
 copyDebugBtn.addEventListener("click", copyDebugInfo);
 toggleDebugBtn.addEventListener("click", toggleDebugSection);
+lineageEnabledInput?.addEventListener("change", saveLineageSettings);
+lineageFolderSelect?.addEventListener("change", saveLineageSettings);
+lineageRefreshBtn?.addEventListener("click", refreshLineageFolders);
+lineageProbeBtn?.addEventListener("click", probeLineageConnection);
+lineageSaveSelectedBtn?.addEventListener("click", saveSelectedToLineage);
+lineageSaveOriginalBtn?.addEventListener("click", saveOriginalToLineage);
 
 initializePopup();
 
 async function initializePopup() {
+  await initializeLineageSettings();
   await hydrateClipboardSection();
   extractFromCurrentTab();
+}
+
+async function initializeLineageSettings() {
+  if (!lineageFeatureEnabled || !lineageBoxEl) {
+    return;
+  }
+
+  lineageBoxEl.hidden = false;
+  const settings = await getLineageSettings();
+  lineageEnabledInput.checked = !!settings.enabled;
+  await renderLineageFolders(settings.customFolderId);
 }
 
 async function hydrateClipboardSection() {
@@ -111,6 +143,7 @@ async function extractFromCurrentTab() {
       tabId: tab.id,
       tabUrl: tab.url || "",
       version: "0.2.0",
+      contentBuildHash: "1134",
     });
 
     const instagramNav = await resolveInstagramNavigationContext(tab);
@@ -155,6 +188,7 @@ async function extractFromCurrentTab() {
     const debug = response.debug || {};
     debug.client = {
       version: "0.2.0",
+      contentBuildHash: "1134",
       probeError,
       instagramSamplingError,
       weiboSamplingError,
@@ -634,6 +668,7 @@ async function downloadSelected() {
   if (!selected.length) return;
 
   const folder = sanitizeFolderName(folderNameInput.value.trim() || state.projectName || "ProjectsA");
+  const lineage = await getLineageDownloadOptions(folder);
   setStatus("Queueing download...");
 
   try {
@@ -642,11 +677,13 @@ async function downloadSelected() {
       folder,
       images: selected.map((item) => ({
         url: item.url,
+        sourceUrl: item.sourceUrl,
         format: item.format,
         isOriginal: !!item.isOriginal,
       })),
       metadata: state.metadata,
       pageUrl: tab?.url || "",
+      lineage,
     });
     const queuedAhead = Number(result?.queuedAhead || 0);
     if (result?.active || queuedAhead > 0) {
@@ -660,6 +697,54 @@ async function downloadSelected() {
   }
 
   setStatus(`Download started for ${selected.length} image(s) in "${folder}".`);
+}
+
+async function saveSelectedToLineage() {
+  const selected = state.images.filter((item) => item.selected);
+  await saveImagesToLineage(selected);
+}
+
+async function saveOriginalToLineage() {
+  const originals = state.images.filter((item) => item.isOriginal);
+  state.images.forEach((item) => {
+    item.selected = !!item.isOriginal;
+  });
+  render();
+  await saveImagesToLineage(originals);
+}
+
+async function saveImagesToLineage(selected) {
+  if (!selected.length) return;
+
+  const folder = sanitizeFolderName(folderNameInput.value.trim() || state.projectName || "ProjectsA");
+  const lineage = await getLineageDownloadOptions(folder, { requireEnabled: false });
+  setLineageStatus("Queueing Lineage import...", false);
+
+  try {
+    const [tab] = await chrome.tabs.query({ active: true, currentWindow: true });
+    const result = await enqueueSelectionDownload({
+      folder,
+      images: selected.map((item) => ({
+        url: item.url,
+        sourceUrl: item.sourceUrl,
+        format: item.format,
+        isOriginal: !!item.isOriginal,
+      })),
+      metadata: state.metadata,
+      pageUrl: tab?.url || "",
+      lineage,
+      lineageOnly: true,
+    });
+    const queuedAhead = Number(result?.queuedAhead || 0);
+    setLineageStatus(
+      result?.active || queuedAhead > 0
+        ? `Queued ${selected.length} image(s) for Lineage. ${queuedAhead} task(s) ahead.`
+        : `Lineage import started for ${selected.length} image(s).`,
+      false
+    );
+  } catch (error) {
+    setLineageStatus(`Lineage save failed: ${error instanceof Error ? error.message : String(error)}`, true);
+  }
 }
 
 async function downloadClipboardWeiboOriginal() {
@@ -818,6 +903,255 @@ function buildDownloadMetadata(baseMetadata, options) {
   };
 }
 
+async function getLineageDownloadOptions(folderName, options = {}) {
+  if (!lineageFeatureEnabled) {
+    return null;
+  }
+
+  await saveLineageSettings();
+  const settings = await getLineageSettings();
+  if (!settings.enabled && options.requireEnabled !== false) {
+    return null;
+  }
+  if (!settings.baseUrl) {
+    throw new Error("Lineage API URL is missing from features.js.");
+  }
+  if (!settings.token) {
+    throw new Error("Lineage token is missing from features.js.");
+  }
+
+  return {
+    enabled: true,
+    baseUrl: normalizeLineageBaseUrl(settings.baseUrl),
+    token: settings.token || "",
+    folderName,
+    customFolderId: settings.customFolderId || "",
+  };
+}
+
+function getLineageSettings() {
+  return new Promise((resolve) => {
+    chrome.storage.local.get({
+      lineageEnabled: false,
+      lineageBaseUrl: defaultLineageBaseUrl,
+      lineageToken: defaultLineageToken,
+      lineageCustomFolderId: "",
+    }, (items) => {
+      resolve({
+        enabled: !!items.lineageEnabled,
+        baseUrl: normalizeLineageBaseUrl(defaultLineageBaseUrl || items.lineageBaseUrl),
+        token: String(defaultLineageToken || items.lineageToken || ""),
+        customFolderId: String(items.lineageCustomFolderId || ""),
+      });
+    });
+  });
+}
+
+function saveLineageSettings() {
+  if (!lineageFeatureEnabled || !lineageEnabledInput) {
+    return Promise.resolve();
+  }
+
+  return new Promise((resolve) => {
+    chrome.storage.local.set({
+      lineageEnabled: !!lineageEnabledInput.checked,
+      lineageBaseUrl: defaultLineageBaseUrl,
+      lineageToken: defaultLineageToken,
+      lineageCustomFolderId: String(lineageFolderSelect?.value || ""),
+    }, resolve);
+  });
+}
+
+async function refreshLineageFolders() {
+  try {
+    await saveLineageSettings();
+    const settings = await getLineageSettings();
+    await renderLineageFolders(settings.customFolderId);
+  } catch (error) {
+    setLineageStatus(error instanceof Error ? error.message : String(error), true);
+  }
+}
+
+async function probeLineageConnection() {
+  if (!lineageFeatureEnabled) {
+    renderLineageDebug({ ok: false, error: "Lineage feature is disabled." });
+    return;
+  }
+
+  lineageProbeBtn.disabled = true;
+  setLineageStatus("Running Lineage probe...", false);
+  const settings = await getLineageSettings();
+  const probe = {
+    contentBuildHash: "1134",
+    featureEnabled: lineageFeatureEnabled,
+    baseUrl: settings.baseUrl,
+    tokenPresent: !!settings.token,
+    tokenPreview: settings.token ? `${settings.token.slice(0, 6)}...${settings.token.slice(-4)}` : "",
+    selectedParentCustomFolderId: settings.customFolderId || "",
+    manifestHostPermissions: chrome.runtime.getManifest()?.host_permissions || [],
+    checks: [],
+  };
+
+  await runLineageProbeCheck(probe, "health", () => lineageRequest(settings, "/health"));
+  await runLineageProbeCheck(probe, "custom-folders", () => lineageRequest(settings, "/custom-folders"));
+
+  const folderCheck = probe.checks.find((item) => item.name === "custom-folders");
+  if (folderCheck?.ok) {
+    const folders = normalizeLineageFolderOptions(folderCheck.payload);
+    folderCheck.folderCount = folders.length;
+    folderCheck.treeCount = Array.isArray(folderCheck.payload?.customFolderTree)
+      ? folderCheck.payload.customFolderTree.length
+      : 0;
+    folderCheck.flatCount = Array.isArray(folderCheck.payload?.customFolders)
+      ? folderCheck.payload.customFolders.length
+      : 0;
+    await renderLineageFolders(settings.customFolderId);
+  }
+
+  renderLineageDebug(probe);
+  const passed = probe.checks.every((item) => item.ok);
+  setLineageStatus(passed ? "Lineage probe passed." : "Lineage probe failed. See debug details.", !passed);
+  lineageProbeBtn.disabled = false;
+}
+
+async function runLineageProbeCheck(probe, name, action) {
+  const startedAt = Date.now();
+  try {
+    const payload = await action();
+    probe.checks.push({
+      name,
+      ok: true,
+      elapsedMs: Date.now() - startedAt,
+      payload,
+    });
+  } catch (error) {
+    probe.checks.push({
+      name,
+      ok: false,
+      elapsedMs: Date.now() - startedAt,
+      error: error instanceof Error ? error.message : String(error),
+    });
+  }
+}
+
+function renderLineageDebug(debug) {
+  if (!lineageDebugBoxEl || !lineageDebugInfoEl) return;
+  lineageDebugBoxEl.hidden = false;
+  lineageDebugBoxEl.open = false;
+  lineageDebugInfoEl.textContent = JSON.stringify(debug, null, 2);
+}
+
+async function renderLineageFolders(selectedId = "") {
+  if (!lineageFolderSelect) {
+    return;
+  }
+
+  lineageRefreshBtn.disabled = true;
+  try {
+    const settings = await getLineageSettings();
+    const payload = await lineageRequest(settings, "/custom-folders");
+    const folders = normalizeLineageFolderOptions(payload);
+    const activeId = selectedId || String(lineageFolderSelect.value || "");
+
+    lineageFolderSelect.innerHTML = "";
+    lineageFolderSelect.appendChild(createLineageFolderOption("", "Root"));
+    for (const folder of folders) {
+      const label = buildLineageFolderLabel(folder);
+      lineageFolderSelect.appendChild(createLineageFolderOption(folder.id, label));
+    }
+
+    lineageFolderSelect.value = folders.some((folder) => folder.id === activeId) ? activeId : "";
+    await saveLineageSettings();
+    setLineageStatus(`Loaded ${folders.length} Custom Folder(s).`, false);
+  } catch (error) {
+    lineageFolderSelect.innerHTML = "";
+    lineageFolderSelect.appendChild(createLineageFolderOption("", "Create from Folder Name"));
+    setLineageStatus(error instanceof Error ? error.message : String(error), true);
+  } finally {
+    lineageRefreshBtn.disabled = false;
+  }
+}
+
+function normalizeLineageFolderOptions(payload) {
+  const tree = Array.isArray(payload?.customFolderTree) ? payload.customFolderTree : [];
+  if (tree.length) {
+    return flattenLineageFolderTree(tree);
+  }
+
+  return Array.isArray(payload?.customFolders)
+    ? payload.customFolders.map((folder) => ({ ...folder, depth: 0 }))
+    : [];
+}
+
+function flattenLineageFolderTree(nodes, depth = 0, output = []) {
+  for (const node of nodes || []) {
+    output.push({ ...node, depth });
+    flattenLineageFolderTree(Array.isArray(node?.children) ? node.children : [], depth + 1, output);
+  }
+  return output;
+}
+
+function createLineageFolderOption(value, label) {
+  const option = document.createElement("option");
+  option.value = String(value || "");
+  option.textContent = label;
+  return option;
+}
+
+function buildLineageFolderLabel(folder) {
+  const prefix = folder?.depth > 0 ? `${"  ".repeat(folder.depth)}- ` : "";
+  const name = String(folder?.name || "Untitled");
+  const assetCount = Number(folder?.assetCount || 0);
+  const childCount = Number(folder?.childCount || 0);
+  return `${prefix}${name} (${assetCount} assets, ${childCount} folders)`;
+}
+
+async function lineageRequest(settings, path, options = {}) {
+  const baseUrl = normalizeLineageBaseUrl(settings.baseUrl);
+  if (!baseUrl) {
+    throw new Error("Lineage API URL is required.");
+  }
+  if (!settings.token) {
+    throw new Error("Lineage token is required.");
+  }
+
+  const response = await fetch(`${baseUrl}${path}`, {
+    ...options,
+    headers: {
+      "Content-Type": "application/json",
+      "X-Lineage-Token": settings.token,
+      ...(options.headers || {}),
+    },
+  });
+  const payload = await response.json().catch(() => ({}));
+  if (!response.ok) {
+    throw new Error(payload.error || `Lineage API request failed: ${response.status}`);
+  }
+  return payload;
+}
+
+function setLineageStatus(message, isError = false) {
+  if (!lineageStatusEl) return;
+  lineageStatusEl.textContent = message;
+  lineageStatusEl.classList.toggle("error", isError);
+}
+
+function normalizeLineageBaseUrl(value) {
+  const raw = String(value || "").trim().replace(/\/+$/g, "");
+  if (!raw) {
+    return "";
+  }
+  try {
+    const parsed = new URL(raw);
+    if (!/^https?:$/i.test(parsed.protocol)) {
+      return "";
+    }
+    return parsed.toString().replace(/\/+$/g, "");
+  } catch {
+    return "";
+  }
+}
+
 function enqueueSelectionDownload(payload) {
   return new Promise((resolve, reject) => {
     chrome.runtime.sendMessage({ type: "mediafetch:enqueue-selection-download", ...payload }, (response) => {
@@ -893,6 +1227,12 @@ function render() {
   clearBtn.disabled = state.images.length === 0;
   selectOriginalBtn.disabled = originalCount === 0;
   downloadBtn.disabled = selectedCount === 0;
+  if (lineageSaveSelectedBtn) {
+    lineageSaveSelectedBtn.disabled = selectedCount === 0 || !lineageFeatureEnabled;
+  }
+  if (lineageSaveOriginalBtn) {
+    lineageSaveOriginalBtn.disabled = originalCount === 0 || !lineageFeatureEnabled;
+  }
 
   for (const [index, item] of state.images.entries()) {
     const card = document.createElement("article");

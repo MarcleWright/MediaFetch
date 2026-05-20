@@ -37,6 +37,32 @@
       <input id="folderName" type="text" placeholder="ProjectsA" />
     </section>
 
+    <section id="lineageBox" class="lineageBox" hidden>
+      <div class="lineageHeader">
+        <label>
+          <input id="lineageEnabled" type="checkbox" />
+          Add to Lineage
+        </label>
+        <div class="lineageActions">
+          <button id="lineageRefreshBtn" type="button" class="secondaryBtn">Refresh</button>
+          <button id="lineageProbeBtn" type="button" class="secondaryBtn">Probe</button>
+        </div>
+      </div>
+      <label for="lineageFolderSelect">Parent Custom Folder</label>
+      <select id="lineageFolderSelect">
+        <option value="">Root</option>
+      </select>
+      <div class="lineageSaveActions">
+        <button id="lineageSaveSelectedBtn" type="button" disabled>Save Selected</button>
+        <button id="lineageSaveOriginalBtn" type="button" disabled>Save Original</button>
+      </div>
+      <div id="lineageStatus" class="lineageStatus"></div>
+      <details id="lineageDebugBox" class="lineageDebugBox" hidden>
+        <summary>Probe Debug</summary>
+        <pre id="lineageDebugInfo" class="lineageDebugInfo"></pre>
+      </details>
+    </section>
+
     <section class="summary">
       <span id="selectionStatus">Selected: 0 / 0</span>
       <button id="downloadBtn" type="button" disabled>Download</button>
@@ -54,6 +80,7 @@
     </section>
     <section id="results" class="grid"></section>
   </main>
+  <script src="features.js"></script>
   <script src="popup.js"></script>
 </body>
 </html>

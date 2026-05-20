@@ -1,3 +1,5 @@
+importScripts("features.js");
+
 let currentDownloadFolder = "";
 let pendingDownloadFileNames = [];
 let pendingMetadataPaths = [];
@@ -14,6 +16,10 @@ const DOWNLOAD_STRATEGY_RULES = [
   { strategy: DOWNLOAD_STRATEGY_FETCH_IMAGE, test: isSinaimgUrl },
   { strategy: DOWNLOAD_STRATEGY_FETCH_IMAGE, test: isXiaohongshuCdnUrl },
 ];
+const features = globalThis.MEDIAFETCH_FEATURES || {};
+const lineageFeatureEnabled = !!features.lineageIntegration;
+const defaultLineageBaseUrl = normalizeLineageBaseUrl(features.defaultLineageBaseUrl || "http://127.0.0.1:17321");
+const defaultLineageToken = String(features.defaultLineageToken || "").trim();
 
 chrome.runtime.onInstalled.addListener(() => {
   setupContextMenus();
@@ -104,6 +110,8 @@ chrome.runtime.onMessage.addListener((message, _sender, sendResponse) => {
       images: Array.isArray(message.images) ? message.images : [],
       metadata: message.metadata || null,
       pageUrl: message.pageUrl || "",
+      lineage: message.lineage || null,
+      lineageOnly: !!message.lineageOnly,
     });
     sendResponse({
       ok: true,
@@ -203,6 +211,7 @@ async function downloadOriginalsFromTab(tab) {
     folder,
     metadata,
     pageUrl: tab.url || "",
+    lineage: await getStoredLineageDownloadOptions(folder),
   });
 }
 
@@ -250,11 +259,16 @@ async function downloadSelectionTask(task) {
     folder,
     metadata,
     pageUrl: task.pageUrl || "",
+    lineage: task.lineage || null,
+    lineageOnly: !!task.lineageOnly,
   });
 }
 
 async function downloadImageBatch(images, options) {
-  const folder = sanitizePathPart(options.folder || "ProjectsA") || "ProjectsA";
+  const requestedFolder = sanitizePathPart(options.folder || "ProjectsA") || "ProjectsA";
+  const folder = options.lineageOnly
+    ? buildLineageTempFolderName(requestedFolder)
+    : requestedFolder;
   const referer = normalizeHttpUrl(options.pageUrl || "") || "https://weibo.com/";
   const filePrefix = getDownloadFilePrefix(options.metadata);
   currentDownloadFolder = folder;
@@ -265,37 +279,104 @@ async function downloadImageBatch(images, options) {
     return buildIndexedFileName(filePrefix, index, extension);
   });
 
+  const downloadRecords = [];
   for (let i = 0; i < images.length; i += 1) {
     const item = images[i];
     const extension = inferExtension(item.url, item.format);
     const fileName = buildIndexedFileName(filePrefix, i, extension);
-    await executeDownloadStrategy(item, fileName, {
+    const downloadId = await executeDownloadStrategy(item, fileName, {
       folder,
       referer,
       pageUrl: options.pageUrl || "",
     });
+    if (downloadId) {
+      downloadRecords.push({
+        id: downloadId,
+        sourceUrl: normalizeHttpUrl(item.sourceUrl || item.url || ""),
+      });
+    }
   }
 
-  await downloadTextFile(JSON.stringify(options.metadata || {}, null, 2), `${folder}/metadata.json`);
+  try {
+    if (!options.lineageOnly) {
+      await downloadTextFile(JSON.stringify(options.metadata || {}, null, 2), `${folder}/metadata.json`);
+    }
+    await importDownloadsToLineage(downloadRecords, {
+      lineage: options.lineage,
+      folder: requestedFolder,
+      metadata: options.metadata || {},
+      pageUrl: options.pageUrl || "",
+    });
+  } finally {
+    if (options.lineageOnly) {
+      await cleanupLineageTempDownloads(downloadRecords.map((item) => item.id));
+    }
+  }
+}
+
+function buildLineageTempFolderName(folder) {
+  const stamp = new Date().toISOString().replace(/[-:TZ.]/g, "").slice(0, 14);
+  const suffix = Math.random().toString(36).slice(2, 8);
+  return `_mediafetch_lineage_imports/${stamp}_${suffix}_${sanitizePathPart(folder || "import")}`;
+}
+
+async function cleanupLineageTempDownloads(downloadIds) {
+  for (const id of downloadIds || []) {
+    try {
+      await removeDownloadedFile(id);
+    } catch (error) {
+      console.warn("MediaFetch could not remove Lineage temp file.", error);
+    }
+    try {
+      await eraseDownloadRecord(id);
+    } catch (error) {
+      console.warn("MediaFetch could not erase Lineage temp download record.", error);
+    }
+  }
+}
+
+function removeDownloadedFile(id) {
+  return new Promise((resolve, reject) => {
+    chrome.downloads.removeFile(id, () => {
+      const error = chrome.runtime.lastError;
+      if (error) {
+        reject(new Error(error.message));
+        return;
+      }
+      resolve();
+    });
+  });
+}
+
+function eraseDownloadRecord(id) {
+  return new Promise((resolve, reject) => {
+    chrome.downloads.erase({ id }, (items) => {
+      const error = chrome.runtime.lastError;
+      if (error) {
+        reject(new Error(error.message));
+        return;
+      }
+      resolve(items || []);
+    });
+  });
 }
 
 async function executeDownloadStrategy(item, filename, context = {}) {
   const strategy = selectDownloadStrategy(item, context);
   if (strategy === DOWNLOAD_STRATEGY_FETCH_IMAGE) {
     try {
-      await downloadFetchedImage(item.url, filename);
+      return await downloadFetchedImage(item.url, filename);
     } catch (error) {
       console.warn("MediaFetch fetch-image download failed; falling back to direct download.", error);
-      await downloadDirectImage(item.url, filename);
+      return await downloadDirectImage(item.url, filename);
     }
-    return;
   }
 
-  await downloadDirectImage(item.url, filename);
+  return await downloadDirectImage(item.url, filename);
 }
 
 async function downloadDirectImage(url, filename) {
-  await downloadToChrome({
+  return await downloadToChrome({
     url,
     filename,
     saveAs: false,
@@ -344,7 +425,7 @@ async function downloadFetchedImage(url, filename) {
 
   const mimeType = contentType.startsWith("image/") ? contentType : inferMimeTypeFromFilename(filename);
   const dataUrl = `data:${mimeType};base64,${encodeBase64(bytes)}`;
-  await downloadToChrome({
+  return await downloadToChrome({
     url: dataUrl,
     filename,
     saveAs: false,
@@ -936,6 +1017,196 @@ function buildDownloadMetadata(baseMetadata, options) {
     originalCount: Number(options.originalCount || 0),
     pluginVersion: options.pluginVersion || "0.2.0",
   };
+}
+
+async function importDownloadsToLineage(downloadRecords, options = {}) {
+  if (!lineageFeatureEnabled) {
+    return;
+  }
+
+  const lineage = normalizeLineageOptions(options.lineage);
+  if (!lineage?.enabled) {
+    return;
+  }
+
+  const completedDownloads = await resolveCompletedDownloads(downloadRecords);
+  const filePaths = completedDownloads.map((item) => item.filePath).filter(Boolean);
+  if (!filePaths.length) {
+    throw new Error("Lineage import skipped because no completed download paths were available.");
+  }
+
+  await lineageRequest(lineage, "/imports/originals", {
+    method: "POST",
+    body: JSON.stringify(buildLineageImportPayload(completedDownloads, lineage, options)),
+  });
+}
+
+function buildLineageImportPayload(completedDownloads, lineage, options = {}) {
+  const filePaths = completedDownloads.map((item) => item.filePath).filter(Boolean);
+  const metadataSourceUrl = resolveLineageMetadataSourceUrl(options.metadata, options.pageUrl);
+  const payload = {
+    filePaths,
+    notes: "Imported from MediaFetch Chrome plugin",
+  };
+
+  if (metadataSourceUrl) {
+    payload.sourceUrl = metadataSourceUrl;
+  } else {
+    const sourceUrls = completedDownloads.map((item) => item.sourceUrl || "").filter(Boolean);
+    if (sourceUrls.length === filePaths.length) {
+      payload.sourceUrls = sourceUrls;
+    }
+  }
+
+  payload.createCustomFolder = {
+    name: lineage.folderName || options.folder || "MediaFetch",
+    description: buildLineageFolderDescription(options.metadata),
+    parentCustomFolderId: lineage.customFolderId || null,
+  };
+  return payload;
+}
+
+async function resolveCompletedDownloads(downloadRecords) {
+  const downloads = [];
+  for (const record of downloadRecords || []) {
+    const item = await waitForDownloadItemComplete(record.id);
+    if (item?.filename) {
+      downloads.push({
+        filePath: item.filename,
+        sourceUrl: record.sourceUrl || "",
+      });
+    }
+  }
+  return downloads;
+}
+
+async function waitForDownloadItemComplete(id, timeoutMs = 120000) {
+  const startedAt = Date.now();
+  while (Date.now() - startedAt < timeoutMs) {
+    const [item] = await searchDownloads({ id });
+    if (!item) {
+      throw new Error(`Download ${id} was not found.`);
+    }
+    if (item.state === "complete") {
+      return item;
+    }
+    if (item.state === "interrupted") {
+      throw new Error(`Download interrupted: ${item.error || id}`);
+    }
+    await delay(500);
+  }
+  throw new Error(`Timed out waiting for download ${id}.`);
+}
+
+function searchDownloads(query) {
+  return new Promise((resolve, reject) => {
+    chrome.downloads.search(query, (items) => {
+      const error = chrome.runtime.lastError;
+      if (error) {
+        reject(new Error(error.message));
+        return;
+      }
+      resolve(items || []);
+    });
+  });
+}
+
+async function getStoredLineageDownloadOptions(folderName) {
+  if (!lineageFeatureEnabled) {
+    return null;
+  }
+
+  const settings = await getStorageValues({
+    lineageEnabled: false,
+    lineageBaseUrl: defaultLineageBaseUrl,
+    lineageToken: defaultLineageToken,
+    lineageCustomFolderId: "",
+  });
+
+  return normalizeLineageOptions({
+    enabled: !!settings.lineageEnabled,
+    baseUrl: defaultLineageBaseUrl || settings.lineageBaseUrl,
+    token: defaultLineageToken || settings.lineageToken,
+    folderName,
+    customFolderId: settings.lineageCustomFolderId,
+  });
+}
+
+function getStorageValues(defaults) {
+  return new Promise((resolve) => {
+    chrome.storage.local.get(defaults, resolve);
+  });
+}
+
+function normalizeLineageOptions(value) {
+  if (!value || !value.enabled) {
+    return null;
+  }
+
+  return {
+    enabled: true,
+    baseUrl: normalizeLineageBaseUrl(value.baseUrl),
+    token: String(value.token || "").trim(),
+    folderName: sanitizePathPart(value.folderName || "MediaFetch") || "MediaFetch",
+    customFolderId: String(value.customFolderId || "").trim(),
+  };
+}
+
+async function lineageRequest(settings, path, options = {}) {
+  if (!settings.baseUrl) {
+    throw new Error("Lineage API URL is required.");
+  }
+  if (!settings.token) {
+    throw new Error("Lineage token is required.");
+  }
+
+  const response = await fetch(`${settings.baseUrl}${path}`, {
+    ...options,
+    headers: {
+      "Content-Type": "application/json",
+      "X-Lineage-Token": settings.token,
+      ...(options.headers || {}),
+    },
+  });
+  const payload = await response.json().catch(() => ({}));
+  if (!response.ok) {
+    throw new Error(payload.error || `Lineage API request failed: ${response.status}`);
+  }
+  return payload;
+}
+
+function normalizeLineageBaseUrl(value) {
+  const raw = String(value || "").trim().replace(/\/+$/g, "");
+  if (!raw) {
+    return "";
+  }
+  try {
+    const parsed = new URL(raw);
+    if (!/^https?:$/i.test(parsed.protocol)) {
+      return "";
+    }
+    return parsed.toString().replace(/\/+$/g, "");
+  } catch {
+    return "";
+  }
+}
+
+function buildLineageFolderDescription(metadata) {
+  const platform = String(metadata?.platform || "").trim();
+  const sourceUrl = String(metadata?.projectUrl || metadata?.normalizedUrl || "").trim();
+  return [platform && `Platform: ${platform}`, sourceUrl && `Source: ${sourceUrl}`]
+    .filter(Boolean)
+    .join("\n") || "Created by MediaFetch";
+}
+
+function resolveLineageMetadataSourceUrl(metadata, pageUrl = "") {
+  return normalizeHttpUrl(
+    metadata?.projectUrl ||
+    metadata?.normalizedUrl ||
+    metadata?.url ||
+    pageUrl ||
+    ""
+  );
 }
 
 function inferExtension(url, format) {
