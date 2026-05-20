@@ -1,5 +1,5 @@
 (() => {
-  const CONTENT_BUILD_HASH = "1134";
+  const CONTENT_BUILD_HASH = "1135";
   const XIAOHONGSHU_DISPLAY_NAME = "\u5c0f\u7ea2\u4e66";
   const XIAOHONGSHU_SUFFIX_PATTERN = /\s*[|\-]\s*(?:\u5c0f\u7ea2\u4e66|Xiaohongshu)\b.*$/i;
   const XIAOHONGSHU_TITLE_PATTERN = /^(.{1,80}?)\s*(?:\u7684|on)\s*(?:\u5c0f\u7ea2\u4e66|Xiaohongshu)/i;
@@ -375,8 +375,17 @@
     } else if (facts.title) {
       parts.push(sanitizeFolderSegment(facts.title));
     }
-    const folderName = sanitizeFolderName(parts.filter(Boolean).join("_"));
+    const folderName = stripTrailingXiaohongshuFolderSuffix(
+      sanitizeFolderName(parts.filter(Boolean).join("_"))
+    );
     return folderName || "ProjectsA";
+  }
+
+  function stripTrailingXiaohongshuFolderSuffix(value) {
+    return String(value || "")
+      .replace(/-小红书$/i, "")
+      .replace(/[-_]+$/g, "")
+      .trim();
   }
 
   function buildProjectMetadata() {

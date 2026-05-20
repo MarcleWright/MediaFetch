@@ -31,6 +31,7 @@ if ($Variant -eq "public") {
 }
 
 $lineageEnabled = if ($Variant -eq "private") { "true" } else { "false" }
+$debugPanelEnabled = if ($Variant -eq "private") { "true" } else { "false" }
 $featureBaseUrl = if ($Variant -eq "private") { $LineageBaseUrl } else { "" }
 $featureToken = if ($Variant -eq "private") { $LineageToken } else { "" }
 $featureBaseUrlJson = ConvertTo-Json $featureBaseUrl -Compress
@@ -40,6 +41,9 @@ globalThis.MEDIAFETCH_FEATURES = {
   lineageIntegration: $lineageEnabled,
   defaultLineageBaseUrl: $featureBaseUrlJson,
   defaultLineageToken: $featureTokenJson,
+  eagleIntegration: true,
+  defaultEagleBaseUrl: "http://localhost:41595",
+  debugPanel: $debugPanelEnabled,
 };
 "@ | Set-Content -LiteralPath (Join-Path $target "features.js") -Encoding UTF8
 

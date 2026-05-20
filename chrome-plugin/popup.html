@@ -11,16 +11,18 @@
     <header class="hero">
       <div class="heroTop">
         <h1>MediaFetch</h1>
-        <span class="version">v0.2.0</span>
+        <span class="version">v0.2.1</span>
       </div>
       <p>Extract images from the current tab using your logged-in browser session.</p>
     </header>
 
     <section class="toolbar">
-      <button id="refreshBtn" type="button">Refresh</button>
-      <button id="selectAllBtn" type="button" disabled>Select All</button>
-      <button id="clearBtn" type="button" disabled>Clear</button>
-      <button id="selectOriginalBtn" type="button" disabled>Select Original</button>
+      <div class="toolbarRow">
+        <button id="refreshBtn" type="button">Refresh</button>
+        <button id="selectAllBtn" type="button" disabled>Select All</button>
+        <button id="clearBtn" type="button" disabled>Clear</button>
+        <button id="selectOriginalBtn" type="button" disabled>Select Original</button>
+      </div>
     </section>
 
     <section id="clipboardBox" class="clipboardBox">
@@ -39,17 +41,22 @@
 
     <section id="lineageBox" class="lineageBox" hidden>
       <div class="lineageHeader">
-        <label>
-          <input id="lineageEnabled" type="checkbox" />
-          Add to Lineage
-        </label>
+        <h2>Save to Lineage</h2>
         <div class="lineageActions">
           <button id="lineageRefreshBtn" type="button" class="secondaryBtn">Refresh</button>
-          <button id="lineageProbeBtn" type="button" class="secondaryBtn">Probe</button>
         </div>
       </div>
-      <label for="lineageFolderSelect">Parent Custom Folder</label>
-      <select id="lineageFolderSelect">
+      <div id="lineageFolderDropdown" class="folderDropdown">
+        <button id="lineageFolderTrigger" class="folderDropdownTrigger" type="button" aria-expanded="false">
+          <span id="lineageFolderTriggerText">Root</span>
+          <span class="folderDropdownArrow" aria-hidden="true">v</span>
+        </button>
+        <div id="lineageFolderPanel" class="folderDropdownPanel" hidden>
+          <input id="lineageFolderSearch" type="search" placeholder="Search folders" />
+          <div id="lineageFolderTree" class="folderTree" role="tree"></div>
+        </div>
+      </div>
+      <select id="lineageFolderSelect" hidden>
         <option value="">Root</option>
       </select>
       <div class="lineageSaveActions">
@@ -57,10 +64,33 @@
         <button id="lineageSaveOriginalBtn" type="button" disabled>Save Original</button>
       </div>
       <div id="lineageStatus" class="lineageStatus"></div>
-      <details id="lineageDebugBox" class="lineageDebugBox" hidden>
-        <summary>Probe Debug</summary>
-        <pre id="lineageDebugInfo" class="lineageDebugInfo"></pre>
-      </details>
+    </section>
+
+    <section id="eagleBox" class="eagleBox" hidden>
+      <div class="lineageHeader">
+        <h2>Save to Eagle</h2>
+        <div class="lineageActions">
+          <button id="eagleRefreshBtn" type="button" class="secondaryBtn">Refresh</button>
+        </div>
+      </div>
+      <div id="eagleFolderDropdown" class="folderDropdown">
+        <button id="eagleFolderTrigger" class="folderDropdownTrigger" type="button" aria-expanded="false">
+          <span id="eagleFolderTriggerText">Root</span>
+          <span class="folderDropdownArrow" aria-hidden="true">v</span>
+        </button>
+        <div id="eagleFolderPanel" class="folderDropdownPanel" hidden>
+          <input id="eagleFolderSearch" type="search" placeholder="Search folders" />
+          <div id="eagleFolderTree" class="folderTree" role="tree"></div>
+        </div>
+      </div>
+      <select id="eagleFolderSelect" hidden>
+        <option value="">Root</option>
+      </select>
+      <div class="lineageSaveActions">
+        <button id="eagleSaveSelectedBtn" type="button" disabled>Save Selected</button>
+        <button id="eagleSaveOriginalBtn" type="button" disabled>Save Original</button>
+      </div>
+      <div id="eagleStatus" class="lineageStatus"></div>
     </section>
 
     <section class="summary">

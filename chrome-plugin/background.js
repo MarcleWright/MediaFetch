@@ -20,6 +20,8 @@ const features = globalThis.MEDIAFETCH_FEATURES || {};
 const lineageFeatureEnabled = !!features.lineageIntegration;
 const defaultLineageBaseUrl = normalizeLineageBaseUrl(features.defaultLineageBaseUrl || "http://127.0.0.1:17321");
 const defaultLineageToken = String(features.defaultLineageToken || "").trim();
+const eagleFeatureEnabled = features.eagleIntegration !== false;
+const defaultEagleBaseUrl = normalizeEagleBaseUrl(features.defaultEagleBaseUrl || "http://localhost:41595");
 
 chrome.runtime.onInstalled.addListener(() => {
   setupContextMenus();
@@ -111,7 +113,9 @@ chrome.runtime.onMessage.addListener((message, _sender, sendResponse) => {
       metadata: message.metadata || null,
       pageUrl: message.pageUrl || "",
       lineage: message.lineage || null,
+      eagle: message.eagle || null,
       lineageOnly: !!message.lineageOnly,
+      convertHeicToPng: !!message.convertHeicToPng,
     });
     sendResponse({
       ok: true,
@@ -142,6 +146,22 @@ chrome.runtime.onMessage.addListener((message, _sender, sendResponse) => {
       active: !!activeDownloadTask,
     });
     return;
+  }
+
+  if (message?.type === "mediafetch:save-to-eagle") {
+    saveImagesToEagle({
+      images: Array.isArray(message.images) ? message.images : [],
+      metadata: message.metadata || null,
+      pageUrl: message.pageUrl || "",
+      eagle: message.eagle || null,
+      convertHeicToPng: !!message.convertHeicToPng,
+    })
+      .then((result) => sendResponse({ ok: true, ...result }))
+      .catch((error) => sendResponse({
+        ok: false,
+        error: error instanceof Error ? error.message : String(error),
+      }));
+    return true;
   }
 });
 
@@ -205,13 +225,13 @@ async function downloadOriginalsFromTab(tab) {
     folderName: folder,
     imageCount: originals.length,
     originalCount: originals.length,
-    pluginVersion: "0.2.0",
+    pluginVersion: "0.2.1",
   });
   await downloadImageBatch(originals, {
     folder,
     metadata,
     pageUrl: tab.url || "",
-    lineage: await getStoredLineageDownloadOptions(folder),
+    convertHeicToPng: await getStoredConvertHeicToPng(),
   });
 }
 
@@ -253,14 +273,16 @@ async function downloadSelectionTask(task) {
     folderName: folder,
     imageCount: selected.length,
     originalCount,
-    pluginVersion: "0.2.0",
+    pluginVersion: "0.2.1",
   });
   await downloadImageBatch(selected, {
     folder,
     metadata,
     pageUrl: task.pageUrl || "",
     lineage: task.lineage || null,
+    eagle: task.eagle || null,
     lineageOnly: !!task.lineageOnly,
+    convertHeicToPng: !!task.convertHeicToPng,
   });
 }
 
@@ -275,19 +297,20 @@ async function downloadImageBatch(images, options) {
   currentDownloadReferer = referer;
   await setupDownloadHeaderRules(images.map((item) => item.url), referer);
   pendingDownloadFileNames = images.map((item, index) => {
-    const extension = inferExtension(item.url, item.format);
+    const extension = inferOutputExtension(item, options);
     return buildIndexedFileName(filePrefix, index, extension);
   });
 
   const downloadRecords = [];
   for (let i = 0; i < images.length; i += 1) {
     const item = images[i];
-    const extension = inferExtension(item.url, item.format);
+    const extension = inferOutputExtension(item, options);
     const fileName = buildIndexedFileName(filePrefix, i, extension);
     const downloadId = await executeDownloadStrategy(item, fileName, {
       folder,
       referer,
       pageUrl: options.pageUrl || "",
+      convertHeicToPng: !!options.convertHeicToPng,
     });
     if (downloadId) {
       downloadRecords.push({
@@ -307,6 +330,15 @@ async function downloadImageBatch(images, options) {
       metadata: options.metadata || {},
       pageUrl: options.pageUrl || "",
     });
+    if (options.eagle) {
+      await saveImagesToEagle({
+        images,
+        metadata: options.metadata || {},
+        pageUrl: options.pageUrl || "",
+        eagle: options.eagle,
+        convertHeicToPng: !!options.convertHeicToPng,
+      });
+    }
   } finally {
     if (options.lineageOnly) {
       await cleanupLineageTempDownloads(downloadRecords.map((item) => item.id));
@@ -362,6 +394,10 @@ function eraseDownloadRecord(id) {
 }
 
 async function executeDownloadStrategy(item, filename, context = {}) {
+  if (shouldConvertHeicToPng(item, context)) {
+    return await downloadConvertedPng(item.url, filename);
+  }
+
   const strategy = selectDownloadStrategy(item, context);
   if (strategy === DOWNLOAD_STRATEGY_FETCH_IMAGE) {
     try {
@@ -373,6 +409,16 @@ async function executeDownloadStrategy(item, filename, context = {}) {
   }
 
   return await downloadDirectImage(item.url, filename);
+}
+
+async function downloadConvertedPng(url, filename) {
+  const dataUrl = await fetchImageAsPngDataUrl(url);
+  return await downloadToChrome({
+    url: dataUrl,
+    filename,
+    saveAs: false,
+    conflictAction: "uniquify",
+  });
 }
 
 async function downloadDirectImage(url, filename) {
@@ -393,6 +439,29 @@ function buildIndexedFileName(prefix, index, extension) {
   const serial = String(index + 1).padStart(3, "0");
   const safeExtension = sanitizeFileName(extension || "jpg").replace(/^\.+/, "") || "jpg";
   return prefix ? `${prefix}_${serial}.${safeExtension}` : `${serial}.${safeExtension}`;
+}
+
+function inferOutputExtension(item, options = {}) {
+  return shouldConvertHeicToPng(item, options)
+    ? "png"
+    : inferExtension(item?.url, item?.format);
+}
+
+function shouldConvertHeicToPng(item, options = {}) {
+  return !!options.convertHeicToPng && isHeicImage(item?.url, item?.format);
+}
+
+function isHeicImage(url, format) {
+  const normalizedFormat = String(format || "").trim().toUpperCase();
+  if (normalizedFormat === "HEIC" || normalizedFormat === "HEIF") {
+    return true;
+  }
+
+  try {
+    return /\.(heic|heif)$/i.test(new URL(String(url || "")).pathname);
+  } catch {
+    return /\.(heic|heif)(?:$|[?#])/i.test(String(url || ""));
+  }
 }
 
 // Network quirks are centralized here so download batching stays platform-neutral.
@@ -1015,7 +1084,7 @@ function buildDownloadMetadata(baseMetadata, options) {
     downloadedAt: new Date().toISOString(),
     imageCount: Number(options.imageCount || 0),
     originalCount: Number(options.originalCount || 0),
-    pluginVersion: options.pluginVersion || "0.2.0",
+    pluginVersion: options.pluginVersion || "0.2.1",
   };
 }
 
@@ -1132,6 +1201,11 @@ async function getStoredLineageDownloadOptions(folderName) {
   });
 }
 
+async function getStoredConvertHeicToPng() {
+  const settings = await getStorageValues({ convertHeicToPng: false });
+  return !!settings.convertHeicToPng;
+}
+
 function getStorageValues(defaults) {
   return new Promise((resolve) => {
     chrome.storage.local.get(defaults, resolve);
@@ -1207,6 +1281,211 @@ function resolveLineageMetadataSourceUrl(metadata, pageUrl = "") {
     pageUrl ||
     ""
   );
+}
+
+async function saveImagesToEagle(options = {}) {
+  if (!eagleFeatureEnabled) {
+    throw new Error("Eagle feature is disabled.");
+  }
+
+  const eagle = normalizeEagleOptions(options.eagle);
+  if (!eagle?.enabled) {
+    throw new Error("Eagle import is not enabled.");
+  }
+
+  const images = Array.isArray(options.images) ? options.images.filter((item) => item?.url) : [];
+  if (!images.length) {
+    throw new Error("No images selected.");
+  }
+
+  const childFolder = await eagleRequest(eagle, "/api/folder/create", {
+    method: "POST",
+    body: JSON.stringify({
+      folderName: eagle.folderName || "MediaFetch",
+      parent: eagle.parentFolderId || undefined,
+    }),
+  });
+  const folderId = String(childFolder?.data?.id || childFolder?.id || "").trim();
+  if (!folderId) {
+    throw new Error("Eagle did not return a created folder id.");
+  }
+
+  const website = resolveEagleMetadataSourceUrl(options.metadata, options.pageUrl);
+  const tags = buildEagleTags(options.metadata);
+  for (const [index, image] of images.entries()) {
+    const extension = inferOutputExtension(image, options);
+    const name = buildIndexedFileName(getDownloadFilePrefix(options.metadata), index, extension).replace(/\.[^.]+$/, "");
+    const importUrl = await resolveEagleImportUrl(image.url, `${name}.${extension}`, {
+      convertHeicToPng: !!options.convertHeicToPng,
+      image,
+    });
+    await eagleRequest(eagle, "/api/item/addFromURL", {
+      method: "POST",
+      body: JSON.stringify({
+        url: importUrl,
+        name,
+        website: website || normalizeHttpUrl(image.sourceUrl || image.url || ""),
+        annotation: buildEagleAnnotation(options.metadata),
+        tags,
+        folderID: folderId,
+        notification: true,
+      }),
+    });
+  }
+
+  return {
+    importedCount: images.length,
+    folderId,
+  };
+}
+
+async function resolveEagleImportUrl(url, filename, options = {}) {
+  if (shouldConvertHeicToPng(options.image || { url }, options)) {
+    return await fetchImageAsPngDataUrl(url);
+  }
+
+  try {
+    return await fetchImageAsDataUrl(url, filename);
+  } catch (error) {
+    console.warn("MediaFetch could not inline image for Eagle; falling back to source URL.", error);
+    return url;
+  }
+}
+
+async function fetchImageAsDataUrl(url, filename) {
+  const response = await fetch(url, {
+    method: "GET",
+    credentials: "include",
+    cache: "no-store",
+  });
+  if (!response.ok) {
+    throw new Error(`Image request failed: ${response.status}`);
+  }
+
+  const contentType = String(response.headers.get("content-type") || "").toLowerCase();
+  if (!isFetchedImageContentTypeAllowed(contentType)) {
+    throw new Error(`Unexpected response type: ${contentType}`);
+  }
+
+  const bytes = new Uint8Array(await response.arrayBuffer());
+  if (!bytes.length) {
+    throw new Error("Image response was empty.");
+  }
+
+  const mimeType = contentType.startsWith("image/") ? contentType : inferMimeTypeFromFilename(filename);
+  return `data:${mimeType};base64,${encodeBase64(bytes)}`;
+}
+
+async function fetchImageAsPngDataUrl(url) {
+  const response = await fetch(url, {
+    method: "GET",
+    credentials: "include",
+    cache: "no-store",
+  });
+  if (!response.ok) {
+    throw new Error(`Image request failed: ${response.status}`);
+  }
+
+  const contentType = String(response.headers.get("content-type") || "").toLowerCase();
+  if (!isFetchedImageContentTypeAllowed(contentType)) {
+    throw new Error(`Unexpected response type: ${contentType}`);
+  }
+
+  const blob = await response.blob();
+  if (!blob.size) {
+    throw new Error("Image response was empty.");
+  }
+  if (typeof createImageBitmap !== "function" || typeof OffscreenCanvas !== "function") {
+    throw new Error("HEIC conversion is not supported by this browser runtime.");
+  }
+
+  const bitmap = await createImageBitmap(blob);
+  try {
+    const canvas = new OffscreenCanvas(bitmap.width, bitmap.height);
+    const context = canvas.getContext("2d");
+    if (!context) {
+      throw new Error("Could not create PNG canvas context.");
+    }
+    context.drawImage(bitmap, 0, 0);
+    const pngBlob = await canvas.convertToBlob({ type: "image/png" });
+    const bytes = new Uint8Array(await pngBlob.arrayBuffer());
+    return `data:image/png;base64,${encodeBase64(bytes)}`;
+  } finally {
+    bitmap.close?.();
+  }
+}
+
+function normalizeEagleOptions(value) {
+  if (!value || !value.enabled) {
+    return null;
+  }
+
+  return {
+    enabled: true,
+    baseUrl: normalizeEagleBaseUrl(value.baseUrl || defaultEagleBaseUrl),
+    folderName: sanitizePathPart(value.folderName || "MediaFetch") || "MediaFetch",
+    parentFolderId: String(value.parentFolderId || "").trim(),
+  };
+}
+
+async function eagleRequest(settings, path, options = {}) {
+  if (!settings.baseUrl) {
+    throw new Error("Eagle API URL is required.");
+  }
+
+  const response = await fetch(`${settings.baseUrl}${path}`, {
+    ...options,
+    headers: {
+      "Content-Type": "application/json",
+      ...(options.headers || {}),
+    },
+  });
+  const payload = await response.json().catch(() => ({}));
+  if (!response.ok || payload?.status === "error") {
+    throw new Error(payload.error || payload.message || `Eagle API request failed: ${response.status}`);
+  }
+  return payload;
+}
+
+function normalizeEagleBaseUrl(value) {
+  const raw = String(value || "").trim().replace(/\/+$/g, "");
+  if (!raw) {
+    return "";
+  }
+  try {
+    const parsed = new URL(raw);
+    if (!/^https?:$/i.test(parsed.protocol)) {
+      return "";
+    }
+    return parsed.toString().replace(/\/+$/g, "");
+  } catch {
+    return "";
+  }
+}
+
+function resolveEagleMetadataSourceUrl(metadata, pageUrl = "") {
+  return normalizeHttpUrl(
+    metadata?.projectUrl ||
+    metadata?.normalizedUrl ||
+    metadata?.url ||
+    pageUrl ||
+    ""
+  );
+}
+
+function buildEagleAnnotation(metadata) {
+  const platform = String(metadata?.platform || "").trim();
+  const title = String(metadata?.title || metadata?.projectTitle || "").trim();
+  return [platform && `Platform: ${platform}`, title && `Title: ${title}`]
+    .filter(Boolean)
+    .join("\n");
+}
+
+function buildEagleTags(metadata) {
+  const tags = [];
+  const platform = String(metadata?.platform || "").trim();
+  if (platform) tags.push(platform);
+  return tags;
 }
 
 function inferExtension(url, format) {

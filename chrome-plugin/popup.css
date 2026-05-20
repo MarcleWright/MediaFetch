@@ -21,8 +21,8 @@ body {
 }
 
 .app {
-  width: 420px;
-  min-height: 520px;
+  width: 560px;
+  min-height: 760px;
   padding: 14px;
 }
 
@@ -54,13 +54,44 @@ body {
   line-height: 1.5;
 }
 
-.toolbar,
+.toolbar {
+  display: grid;
+  gap: 8px;
+  margin-top: 12px;
+}
+
+.toolbarRow,
 .summary {
   display: flex;
   gap: 8px;
   flex-wrap: wrap;
   align-items: center;
+}
+
+.summary {
   margin-top: 12px;
+}
+
+.toolbarOptions {
+  justify-content: flex-start;
+}
+
+.toolbarToggle {
+  display: inline-flex;
+  align-items: center;
+  gap: 6px;
+  min-height: 32px;
+  padding: 0 8px;
+  border: 1px solid var(--line);
+  border-radius: 10px;
+  background: var(--panel);
+  color: var(--text);
+  font-size: 12px;
+  font-weight: 700;
+}
+
+.toolbarToggle input {
+  width: auto;
 }
 
 button,
@@ -85,7 +116,8 @@ button:disabled {
 
 .folderBox,
 .clipboardBox,
-.lineageBox {
+.lineageBox,
+.eagleBox {
   margin-top: 12px;
   padding: 8px 10px;
   border: 1px solid var(--line);
@@ -119,10 +151,20 @@ button:disabled {
   line-height: 1.2;
 }
 
+.eagleBox label {
+  display: block;
+  margin-bottom: 4px;
+  font-size: 12px;
+  font-weight: 700;
+  line-height: 1.2;
+}
+
 .folderBox input,
 .clipboardBox input,
 .lineageBox input[type="text"],
 .lineageBox input[type="password"],
+.lineageBox input[type="search"],
+.eagleBox input[type="search"],
 .lineageBox select {
   flex: 1 1 auto;
   min-width: 0;
@@ -134,12 +176,150 @@ button:disabled {
   width: 100%;
 }
 
+.eagleBox select,
+.eagleBox input[type="search"] {
+  flex: 1 1 auto;
+  min-width: 0;
+  padding: 8px 10px;
+  border: 1px solid var(--line);
+  border-radius: 10px;
+  min-height: 0;
+  height: auto;
+  width: 100%;
+}
+
+.folderDropdown {
+  position: relative;
+}
+
+.folderDropdownTrigger {
+  display: grid;
+  grid-template-columns: minmax(0, 1fr) 18px;
+  align-items: center;
+  width: 100%;
+  min-height: 34px;
+  padding: 8px 10px;
+  border: 1px solid var(--line);
+  border-radius: 10px;
+  background: #fff;
+  color: var(--text);
+  text-align: left;
+}
+
+.folderDropdownTrigger span:first-child {
+  min-width: 0;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+.folderDropdownArrow {
+  color: var(--muted);
+  font-size: 11px;
+  text-align: right;
+}
+
+.folderDropdownPanel {
+  z-index: 20;
+  position: absolute;
+  top: calc(100% + 6px);
+  left: 0;
+  right: 0;
+  padding: 8px;
+  border: 1px solid var(--line);
+  border-radius: 10px;
+  background: var(--panel);
+  box-shadow: 0 12px 28px rgba(31, 41, 55, 0.18);
+}
+
+.folderTree {
+  margin-top: 8px;
+  max-height: 180px;
+  overflow: auto;
+  border: 1px solid var(--line);
+  border-radius: 10px;
+  background: #f8fbff;
+}
+
+.folderTreeRow {
+  display: grid;
+  grid-template-columns: 24px minmax(0, 1fr);
+  align-items: center;
+  min-height: 30px;
+  padding-right: 8px;
+  color: var(--text);
+}
+
+.folderTreeRow.selected {
+  background: var(--accent-soft);
+  color: var(--accent);
+  font-weight: 700;
+}
+
+.folderTreeRow:hover {
+  background: #eef3fb;
+}
+
+.folderTreeToggle {
+  width: 24px;
+  min-height: 24px;
+  padding: 0;
+  background: transparent;
+  color: var(--muted);
+  font-size: 12px;
+}
+
+.folderTreeToggle:disabled {
+  opacity: 0.35;
+}
+
+.folderTreeName {
+  min-width: 0;
+  padding: 6px 0;
+  border: 0;
+  background: transparent;
+  color: inherit;
+  text-align: left;
+  display: flex;
+  flex-direction: column;
+  align-items: flex-start;
+  gap: 1px;
+}
+
+.folderTreeNamePrimary {
+  max-width: 100%;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+.folderTreeNamePath {
+  max-width: 100%;
+  color: var(--muted);
+  font-size: 10px;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+.folderTreeEmpty {
+  padding: 8px 10px;
+  color: var(--muted);
+  font-size: 12px;
+}
+
 .lineageHeader {
   display: flex;
   align-items: center;
   justify-content: space-between;
   gap: 8px;
   margin-bottom: 8px;
+}
+
+.lineageHeader h2 {
+  margin: 0;
+  font-size: 13px;
+  line-height: 1.2;
 }
 
 .lineageHeader label {
@@ -338,11 +518,17 @@ button:disabled {
 .meta {
   display: flex;
   gap: 6px;
-  flex-wrap: wrap;
+  flex-wrap: nowrap;
   margin-top: 8px;
 }
 
 .pill {
+  flex: 0 0 auto;
+  min-width: 0;
+  max-width: 100%;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
   padding: 6px 8px;
   border: 1px solid var(--line);
   border-radius: 999px;
