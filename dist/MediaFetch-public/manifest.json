@@ -1,0 +1,51 @@
+﻿{
+    "manifest_version":  3,
+    "name":  "MediaFetch",
+    "version":  "0.2.1",
+    "description":  "Extract images from the current page in your logged-in browser session.",
+    "permissions":  [
+                        "activeTab",
+                        "clipboardRead",
+                        "contextMenus",
+                        "declarativeNetRequest",
+                        "downloads",
+                        "scripting",
+                        "storage",
+                        "tabs"
+                    ],
+    "host_permissions":  [
+                             "http://localhost:41595/*",
+                             "http://127.0.0.1:41595/*",
+                             "<all_urls>"
+                         ],
+    "background":  {
+                       "service_worker":  "background.js"
+                   },
+    "icons":  {
+                  "16":  "icons/ICON.PNG",
+                  "32":  "icons/ICON.PNG",
+                  "48":  "icons/ICON.PNG",
+                  "128":  "icons/ICON.PNG"
+              },
+    "action":  {
+                   "default_title":  "MediaFetch",
+                   "default_popup":  "popup.html",
+                   "default_icon":  {
+                                        "16":  "icons/ICON.PNG",
+                                        "32":  "icons/ICON.PNG",
+                                        "48":  "icons/ICON.PNG",
+                                        "128":  "icons/ICON.PNG"
+                                    }
+               },
+    "content_scripts":  [
+                            {
+                                "matches":  [
+                                                "<all_urls>"
+                                            ],
+                                "js":  [
+                                           "content.js"
+                                       ],
+                                "run_at":  "document_idle"
+                            }
+                        ]
+}

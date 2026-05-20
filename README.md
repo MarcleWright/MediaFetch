@@ -16,7 +16,7 @@ Build the Chrome extension from the workspace root:
 .\build-extension.ps1 -Variant private
 ```
 
-The public variant hides the Image Dataset Lineage Manager integration. The private variant exposes local API settings and can import downloaded files into a Lineage Custom Folder.
+The public variant hides the Image Dataset Lineage Manager integration but keeps the Eagle integration enabled. The private variant exposes the Lineage integration and also keeps Eagle enabled.
 
 For a paired private build, run Lineage with a fixed token and pass the same value at export time:
 
