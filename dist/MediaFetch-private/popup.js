@@ -13,6 +13,7 @@ const downloadBtn = document.getElementById("downloadBtn");
 const clipboardUrlInput = document.getElementById("clipboardUrlInput");
 const clipboardUrlEl = document.getElementById("clipboardUrl");
 const clipboardDownloadBtn = document.getElementById("clipboardDownloadBtn");
+const convertHeicToPngInput = document.getElementById("convertHeicToPng");
 const folderNameInput = document.getElementById("folderName");
 const selectionStatus = document.getElementById("selectionStatus");
 const statusEl = document.getElementById("status");
@@ -104,6 +105,7 @@ clipboardDownloadBtn.addEventListener("click", downloadClipboardWeiboOriginal);
 clipboardUrlInput.addEventListener("input", () => {
   updateClipboardLinkState(clipboardUrlInput.value);
 });
+convertHeicToPngInput?.addEventListener("change", saveConvertHeicToPngSetting);
 copyDebugBtn?.addEventListener("click", copyDebugInfo);
 toggleDebugBtn?.addEventListener("click", toggleDebugSection);
 lineageFolderSelect?.addEventListener("change", saveLineageSettings);
@@ -157,9 +159,19 @@ initializePopup().catch((error) => {
 
 async function initializePopup() {
   initializeDebugPanel();
+  await initializeConvertHeicToPngSetting();
   await initializeLineageSettings();
   await initializeEagleSettings();
   extractFromCurrentTab();
+}
+
+async function initializeConvertHeicToPngSetting() {
+  if (!convertHeicToPngInput) {
+    return;
+  }
+
+  const settings = await getStorageValues({ convertHeicToPng: false });
+  convertHeicToPngInput.checked = !!settings.convertHeicToPng;
 }
 
 async function initializeLineageSettings() {
@@ -190,7 +202,25 @@ function initializeDebugPanel() {
 }
 
 function getConvertHeicToPngSetting() {
-  return false;
+  return !!convertHeicToPngInput?.checked;
+}
+
+function saveConvertHeicToPngSetting() {
+  if (!convertHeicToPngInput) {
+    return Promise.resolve();
+  }
+
+  return new Promise((resolve) => {
+    chrome.storage.local.set({
+      convertHeicToPng: !!convertHeicToPngInput.checked,
+    }, resolve);
+  });
+}
+
+function getStorageValues(defaults) {
+  return new Promise((resolve) => {
+    chrome.storage.local.get(defaults, resolve);
+  });
 }
 
 function updateClipboardLinkState(rawValue) {

@@ -446,7 +446,7 @@
     facts.title = inferBehanceProjectTitle();
     facts.displayAuthor = authorContext?.authorName || authorContext?.slug || "";
     facts.authorId = authorContext?.slug || "";
-    facts.projectId = extractBehanceProjectId(location.pathname);
+    facts.projectId = extractBehanceProjectId(location.pathname) || extractBehanceProjectId(facts.projectUrl) || extractBehanceProjectId(facts.normalizedUrl);
     facts.publishedAt = inferBehancePublishedAt();
     facts.publishedDateCode = formatDateCodeYymmdd(facts.publishedAt);
     return normalizeProjectFacts(facts);
@@ -1661,8 +1661,21 @@
 
   function extractBehanceProjectId(value) {
     const pathname = normalizePathname(value);
-    const match = pathname.match(/\/project\/(\d+)/i);
-    return match ? match[1] : "";
+    if (!pathname) {
+      return "";
+    }
+
+    let match = pathname.match(/\/gallery\/([^/?#]+)(?:\/|$)/i);
+    if (match?.[1]) {
+      return match[1];
+    }
+
+    match = pathname.match(/\/project\/([^/?#]+)(?:\/|$)/i);
+    if (match?.[1]) {
+      return match[1];
+    }
+
+    return "";
   }
 
   function normalizeUrl(rawUrl) {

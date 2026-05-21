@@ -12,6 +12,7 @@ const WEIBO_DOWNLOAD_RULE_ID = 901001;
 const METADATA_SENTINEL_FILE_NAME = "__mediafetch_metadata__.json";
 const DOWNLOAD_STRATEGY_DIRECT = "direct";
 const DOWNLOAD_STRATEGY_FETCH_IMAGE = "fetchImage";
+const HEIC_CONVERTER_OFFSCREEN_URL = "offscreen.html";
 const DOWNLOAD_STRATEGY_RULES = [
   { strategy: DOWNLOAD_STRATEGY_FETCH_IMAGE, test: isSinaimgUrl },
   { strategy: DOWNLOAD_STRATEGY_FETCH_IMAGE, test: isXiaohongshuCdnUrl },
@@ -1391,28 +1392,59 @@ async function fetchImageAsPngDataUrl(url) {
     throw new Error(`Unexpected response type: ${contentType}`);
   }
 
-  const blob = await response.blob();
-  if (!blob.size) {
+  const buffer = await response.arrayBuffer();
+  if (!buffer.byteLength) {
     throw new Error("Image response was empty.");
   }
-  if (typeof createImageBitmap !== "function" || typeof OffscreenCanvas !== "function") {
-    throw new Error("HEIC conversion is not supported by this browser runtime.");
+
+  return await convertHeicArrayBufferToPngDataUrl(buffer, contentType);
+}
+
+let creatingHeicConverterDocument = null;
+
+async function convertHeicArrayBufferToPngDataUrl(buffer, contentType) {
+  await ensureHeicConverterDocument();
+
+  return await new Promise((resolve, reject) => {
+    chrome.runtime.sendMessage({
+      type: "mediafetch:offscreen-convert-heic-to-png",
+      bufferBase64: encodeBase64(new Uint8Array(buffer)),
+      contentType,
+    }, (response) => {
+      const error = chrome.runtime.lastError;
+      if (error) {
+        reject(new Error(error.message));
+        return;
+      }
+      if (!response?.ok || !response.dataUrl) {
+        reject(new Error(response?.error || "HEIC conversion failed."));
+        return;
+      }
+      resolve(response.dataUrl);
+    });
+  });
+}
+
+async function ensureHeicConverterDocument() {
+  if (!chrome.offscreen?.createDocument) {
+    throw new Error("HEIC conversion requires the chrome.offscreen extension API.");
   }
 
-  const bitmap = await createImageBitmap(blob);
-  try {
-    const canvas = new OffscreenCanvas(bitmap.width, bitmap.height);
-    const context = canvas.getContext("2d");
-    if (!context) {
-      throw new Error("Could not create PNG canvas context.");
-    }
-    context.drawImage(bitmap, 0, 0);
-    const pngBlob = await canvas.convertToBlob({ type: "image/png" });
-    const bytes = new Uint8Array(await pngBlob.arrayBuffer());
-    return `data:image/png;base64,${encodeBase64(bytes)}`;
-  } finally {
-    bitmap.close?.();
+  if (chrome.offscreen.hasDocument && await chrome.offscreen.hasDocument()) {
+    return;
   }
+
+  if (!creatingHeicConverterDocument) {
+    creatingHeicConverterDocument = chrome.offscreen.createDocument({
+      url: HEIC_CONVERTER_OFFSCREEN_URL,
+      reasons: ["BLOBS"],
+      justification: "Convert downloaded HEIC/HEIF image data to PNG inside MediaFetch.",
+    }).finally(() => {
+      creatingHeicConverterDocument = null;
+    });
+  }
+
+  await creatingHeicConverterDocument;
 }
 
 function normalizeEagleOptions(value) {
