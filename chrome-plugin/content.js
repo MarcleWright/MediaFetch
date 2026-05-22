@@ -1,5 +1,5 @@
 (() => {
-  const CONTENT_BUILD_HASH = "1135";
+  const CONTENT_BUILD_HASH = "1140";
   const XIAOHONGSHU_DISPLAY_NAME = "\u5c0f\u7ea2\u4e66";
   const XIAOHONGSHU_SUFFIX_PATTERN = /\s*[|\-]\s*(?:\u5c0f\u7ea2\u4e66|Xiaohongshu)\b.*$/i;
   const XIAOHONGSHU_TITLE_PATTERN = /^(.{1,80}?)\s*(?:\u7684|on)\s*(?:\u5c0f\u7ea2\u4e66|Xiaohongshu)/i;
@@ -32,6 +32,13 @@
       match: isWeiboHost,
       extractFacts: extractWeiboFacts,
       collectMedia: collectWeiboOriginalMedia,
+    },
+    {
+      id: "weixin",
+      folderPlatform: "weixin",
+      match: isWeixinHost,
+      extractFacts: extractWeixinFacts,
+      collectMedia: collectWeixinOriginalMedia,
     },
   ];
 
@@ -229,7 +236,7 @@
       }
     };
 
-    if ((/(instagram\.com|behance\.net|weibo\.com)$/i.test(location.hostname) || isXiaohongshuHost()) && domainOriginalUrls?.size) {
+    if ((/(instagram\.com|behance\.net|weibo\.com|weixin\.qq\.com)$/i.test(location.hostname) || isXiaohongshuHost()) && domainOriginalUrls?.size) {
       domainOriginalUrls.forEach((url) => {
         const originalMeta = platformMedia.originalUrlMeta?.get?.(url) || {};
         push(url, {
@@ -238,9 +245,11 @@
             ? "behance-original"
             : /weibo\.com$/i.test(location.hostname)
               ? "weibo-original"
-              : isXiaohongshuHost()
-                ? "xiaohongshu-original"
-                : "instagram-sampled",
+              : /weixin\.qq\.com$/i.test(location.hostname)
+                ? "weixin-original"
+                : isXiaohongshuHost()
+                  ? "xiaohongshu-original"
+                  : "instagram-sampled",
         });
       });
     }
@@ -463,6 +472,15 @@
     return normalizeProjectFacts(facts);
   }
 
+  function extractWeixinFacts(baseFacts) {
+    const facts = { ...baseFacts };
+    facts.displayAuthor = inferWeixinAuthorName();
+    facts.projectId = extractWeixinProjectId(location.href);
+    facts.publishedAt = inferWeixinPublishedAt();
+    facts.publishedDateCode = formatDateCodeYymmdd(facts.publishedAt);
+    return normalizeProjectFacts(facts);
+  }
+
   function createEmptyProjectFacts() {
     return {
       platform: inferPlatformName(),
@@ -515,6 +533,10 @@
   function inferNormalizedProjectUrl() {
     if (isInstagramHost()) {
       return buildInstagramNormalizedUrl(collectInstagramPostContext());
+    }
+
+    if (isWeixinHost()) {
+      return buildWeixinNormalizedUrl();
     }
 
     try {
@@ -1791,6 +1813,7 @@
     if (sourceHint === "weibo-original") score += 580;
     else if (sourceHint === "behance-original") score += 560;
     else if (sourceHint === "xiaohongshu-original") score += 550;
+    else if (sourceHint === "weixin-original") score += 545;
     else if (sourceHint === "rendered-srcset") score += 400;
     else if (sourceHint === "rendered-data") score += 360;
     else if (sourceHint === "rendered-meta") score += 320;
@@ -1805,6 +1828,9 @@
       score += 220;
     }
     if (/\/\/[^/]+\.sinaimg\.cn\/(?:mw2000|large|mw1024|oslarge)\//i.test(lowered)) {
+      score += 180;
+    }
+    if (/\/\/mmbiz\.qpic\.cn\/[^?#]+\/0(?:[?#]|$)/i.test(lowered)) {
       score += 180;
     }
     if (/(thumb|thumbnail|small|preview|avatar|icon|sprite|crop|tiny|medium)/.test(lowered)) {
@@ -1932,6 +1958,40 @@
       layerIds: layerHints.layerIds.slice(0, 12),
       urlCount: urls.size,
       preview: Array.from(urls).slice(0, 6),
+    };
+
+    return media;
+  }
+
+  async function collectWeixinOriginalMedia() {
+    const media = createEmptyPlatformMedia();
+    if (!isWeixinHost()) {
+      return media;
+    }
+
+    const root = findWeixinArticleContainer();
+    const candidateImages = root ? collectWeixinArticleImageCandidates(root) : [];
+
+    const originalProbe = await collectWeixinOriginalProbe(candidateImages);
+    media.originalUrls = originalProbe.urls.size ? originalProbe.urls : null;
+    media.originalUrlMeta = originalProbe.meta.size ? originalProbe.meta : null;
+    media.debug.original = {
+      containerFound: !!root,
+      containerTag: root ? root.tagName : null,
+      candidateCount: candidateImages.length,
+      probeCount: originalProbe.probes.length,
+      acceptedCount: originalProbe.probes.filter((item) => item.accepted).length,
+      acceptedOriginalCount: originalProbe.probes.filter((item) => item.accepted && item.finalUrl === item.originalUrl).length,
+      renderedCandidatePreview: candidateImages.slice(0, 8).map((candidate) => ({
+        url: candidate.sourceUrl,
+        width: candidate.width,
+        height: candidate.height,
+        sourceKind: candidate.sourceKind,
+      })),
+      sourceKindCounts: countWeixinCandidateSourceKinds(candidateImages),
+      probePreview: originalProbe.probes.slice(0, 8),
+      urlCount: originalProbe.urls.size,
+      preview: Array.from(originalProbe.urls).slice(0, 8),
     };
 
     return media;
@@ -2291,6 +2351,15 @@
       };
     }
 
+    if (/weixin\.qq\.com$/i.test(location.hostname)) {
+      debug.weixin = {
+        projectId: extractWeixinProjectId(location.href),
+        author: inferWeixinAuthorName(),
+        publishedAt: inferWeixinPublishedAt(),
+        original: mediaDebug.original,
+      };
+    }
+
     return debug;
   }
 
@@ -2330,6 +2399,10 @@
 
   function isWeiboHost() {
     return /(^|\.)weibo\.com$/i.test(location.hostname);
+  }
+
+  function isWeixinHost() {
+    return /(^|\.)weixin\.qq\.com$/i.test(location.hostname);
   }
 
   function inferXiaohongshuAuthorContext() {
@@ -2761,6 +2834,97 @@
     return /\d{10,13}|20\d{2}[-/.年]\s*\d{1,2}[-/.月]\s*\d{1,2}|(?:发布于|编辑于|发表于|更新于)/.test(text);
   }
 
+  function inferWeixinAuthorName() {
+    const candidates = [
+      document.querySelector("#js_name")?.textContent,
+      document.querySelector(".rich_media_meta_text")?.textContent,
+      document.querySelector('meta[property="og:article:author"]')?.content,
+      document.querySelector('meta[name="author"]')?.content,
+    ].map((value) => cleanVisibleText(value))
+      .filter((value) => value && !/^(微信|Weixin|公众号)$/i.test(value));
+
+    return candidates[0] || "";
+  }
+
+  function inferWeixinPublishedAt() {
+    const candidates = [
+      document.querySelector("#publish_time")?.textContent,
+      document.querySelector("#js_publish_time")?.textContent,
+      document.querySelector('meta[property="article:published_time"]')?.content,
+      document.querySelector('meta[name="publishdate"]')?.content,
+      document.documentElement?.innerHTML || "",
+    ].filter(Boolean);
+
+    for (const value of candidates) {
+      const parsed = parseWeixinDate(value);
+      if (parsed) {
+        return parsed;
+      }
+    }
+
+    return "";
+  }
+
+  function parseWeixinDate(value) {
+    const raw = String(value || "");
+    const isoMatch = raw.match(/(20\d{2})[-/](\d{1,2})[-/](\d{1,2})(?:[T\s]+(\d{1,2}):(\d{2})(?::(\d{2}))?)?/);
+    if (isoMatch) {
+      const year = Number(isoMatch[1]);
+      const month = Number(isoMatch[2]);
+      const day = Number(isoMatch[3]);
+      if (isValidDateParts(year, month, day)) {
+        return `${year}-${String(month).padStart(2, "0")}-${String(day).padStart(2, "0")}`;
+      }
+    }
+
+    const cnMatch = raw.match(/(20\d{2})\s*年\s*(\d{1,2})\s*月\s*(\d{1,2})\s*日/);
+    if (cnMatch) {
+      const year = Number(cnMatch[1]);
+      const month = Number(cnMatch[2]);
+      const day = Number(cnMatch[3]);
+      if (isValidDateParts(year, month, day)) {
+        return `${year}-${String(month).padStart(2, "0")}-${String(day).padStart(2, "0")}`;
+      }
+    }
+
+    return "";
+  }
+
+  function extractWeixinProjectId(value) {
+    try {
+      const parsed = new URL(value, location.href);
+      const shortLinkMatch = parsed.pathname.match(/^\/s\/([^/?#]+)/i);
+      if (shortLinkMatch?.[1]) {
+        return decodeURIComponent(shortLinkMatch[1]);
+      }
+
+      return parsed.searchParams.get("__biz") ||
+        parsed.searchParams.get("mid") ||
+        parsed.searchParams.get("sn") ||
+        "";
+    } catch {
+      return "";
+    }
+  }
+
+  function buildWeixinNormalizedUrl() {
+    const projectId = extractWeixinProjectId(location.href);
+    if (projectId && /^\/s\//i.test(location.pathname)) {
+      return `https://mp.weixin.qq.com/s/${encodeURIComponent(projectId)}`;
+    }
+
+    try {
+      const parsed = new URL(location.href);
+      parsed.hash = "";
+      ["chksm", "scene", "subscene", "sessionid", "clicktime", "enterid", "ascene", "devicetype", "version", "lang", "nettype", "exportkey", "pass_ticket", "wx_header"].forEach((name) => {
+        parsed.searchParams.delete(name);
+      });
+      return parsed.toString();
+    } catch {
+      return location.href;
+    }
+  }
+
   function isValidDateParts(year, month, day) {
     if (year < 2000 || year > 2099 || month < 1 || month > 12 || day < 1 || day > 31) {
       return false;
@@ -2797,6 +2961,55 @@
       .sort((a, b) => b.score - a.score);
 
     return scored[0]?.node || document.querySelector("main") || document.body;
+  }
+
+  function findWeixinArticleContainer() {
+    const selectors = [
+      "#js_content",
+      ".rich_media_content",
+      "#img-content",
+      "article",
+      "main",
+    ];
+
+    const scored = selectors
+      .flatMap((selector) => Array.from(document.querySelectorAll(selector)))
+      .filter((node, index, nodes) => node instanceof Element && nodes.indexOf(node) === index)
+      .map((node) => ({
+        node,
+        score: scoreWeixinContainer(node),
+      }))
+      .filter((item) => item.score > 0)
+      .sort((a, b) => b.score - a.score);
+
+    return scored[0]?.node || document.querySelector("#js_content") || document.body;
+  }
+
+  function scoreWeixinContainer(node) {
+    if (!(node instanceof Element)) {
+      return 0;
+    }
+
+    const images = Array.from(node.querySelectorAll("img"));
+    if (!images.length) {
+      return 0;
+    }
+
+    let score = 0;
+    const text = `${node.id || ""} ${node.getAttribute("class") || ""}`;
+    if (/(js_content|rich_media_content|img-content|article|content)/i.test(text)) {
+      score += 80;
+    }
+
+    images.forEach((img) => {
+      const src = String(img.currentSrc || img.src || img.getAttribute("data-src") || "");
+      const area = Number(img.naturalWidth || img.width || 0) * Number(img.naturalHeight || img.height || 0);
+      if (isWeixinQpicImageUrl(src)) score += 12;
+      if (area >= 40000) score += 8;
+      if (isLikelyWeixinUtilityImage(img)) score -= 20;
+    });
+
+    return score;
   }
 
   function scoreXiaohongshuContainer(node) {
@@ -2925,6 +3138,238 @@
     }
   }
 
+  function normalizeWeixinImageUrl(rawUrl) {
+    const normalized = normalizeUrl(rawUrl);
+    if (!normalized) {
+      return "";
+    }
+
+    try {
+      const parsed = new URL(normalized);
+      if (!isWeixinQpicImageUrl(parsed.toString())) {
+        return normalized;
+      }
+
+      parsed.hash = "";
+      return parsed.toString();
+    } catch {
+      return normalized.replace(/#.*$/, "");
+    }
+  }
+
+  function isWeixinQpicImageUrl(rawUrl) {
+    try {
+      const parsed = new URL(normalizeUrl(rawUrl));
+      return /(^|\.)mmbiz\.qpic\.cn$/i.test(parsed.hostname) && /\/(?:sz_)?mmbiz_(?:jpg|jpeg|png|gif|webp)\//i.test(parsed.pathname);
+    } catch {
+      return /mmbiz\.qpic\.cn\/(?:sz_)?mmbiz_(?:jpg|jpeg|png|gif|webp)\//i.test(String(rawUrl || ""));
+    }
+  }
+
+  function isLikelyWeixinContentImage(img) {
+    const src = getWeixinCandidateSourceUrl(img);
+    if (!isWeixinQpicImageUrl(src)) {
+      return false;
+    }
+
+    const width = Number(img.naturalWidth || img.width || 0);
+    const height = Number(img.naturalHeight || img.height || 0);
+    return width >= 180 && height >= 120;
+  }
+
+  function collectWeixinArticleImageCandidates(root) {
+    const byKey = new Map();
+    const push = (candidate) => {
+      if (!candidate?.sourceUrl) {
+        return;
+      }
+
+      const key = getWeixinMediaKey(candidate.sourceUrl) || candidate.sourceUrl;
+      const existing = byKey.get(key);
+      if (!existing || isBetterWeixinCandidate(candidate, existing)) {
+        byKey.set(key, candidate);
+      }
+    };
+
+    Array.from(root.querySelectorAll("img")).forEach((img) => {
+      push(buildWeixinArticleImageCandidate(img));
+    });
+
+    collectWeixinDomImageUrls(root).forEach((item) => {
+      push(buildWeixinUrlCandidate(item.url, item.kind, item.element));
+    });
+
+    return Array.from(byKey.values())
+      .sort((a, b) => a.top - b.top);
+  }
+
+  function buildWeixinArticleImageCandidate(img) {
+    if (isLikelyWeixinUtilityImage(img)) {
+      return null;
+    }
+
+    const linkType = classifyLinkContext(img);
+    if (linkType === "profile") {
+      return null;
+    }
+
+    const source = getWeixinCandidateSourceInfo(img);
+    if (!source.url) {
+      return null;
+    }
+
+    const width = Number(img.naturalWidth || img.width || img.getAttribute("data-w") || img.getAttribute("width") || 0);
+    const ratioHeight = width && img.getAttribute("data-ratio")
+      ? Math.round(width * Number(img.getAttribute("data-ratio") || 0))
+      : 0;
+    const height = Number(img.naturalHeight || img.height || ratioHeight || img.getAttribute("height") || 0);
+
+    return {
+      img,
+      sourceUrl: source.url,
+      sourceKind: source.kind,
+      width,
+      height,
+      area: width * height,
+      top: Math.max(0, Math.round(img.getBoundingClientRect().top + window.scrollY)),
+      linkType,
+    };
+  }
+
+  function buildWeixinUrlCandidate(rawUrl, sourceKind, element = null) {
+    const sourceUrl = normalizeWeixinImageUrl(rawUrl);
+    if (!isWeixinQpicImageUrl(sourceUrl)) {
+      return null;
+    }
+
+    if (element instanceof Element) {
+      const linkType = classifyElementLinkContext(element);
+      if (linkType === "profile") {
+        return null;
+      }
+      const text = `${element.getAttribute("alt") || ""} ${element.getAttribute("class") || ""} ${element.id || ""}`.toLowerCase();
+      if (/(avatar|headimg|profile|icon|logo|qr|qrcode|emoji|reward|comment|like|share|loading|placeholder)/i.test(`${sourceUrl} ${text}`)) {
+        return null;
+      }
+    }
+
+    const width = Number(element?.getAttribute?.("data-w") || element?.getAttribute?.("width") || 0);
+    const ratioHeight = width && element?.getAttribute?.("data-ratio")
+      ? Math.round(width * Number(element.getAttribute("data-ratio") || 0))
+      : 0;
+    const height = Number(ratioHeight || element?.getAttribute?.("height") || 0);
+
+    return {
+      img: element?.tagName === "IMG" ? element : null,
+      sourceUrl,
+      sourceKind,
+      width,
+      height,
+      area: width * height,
+      top: element instanceof Element ? Math.max(0, Math.round(element.getBoundingClientRect().top + window.scrollY)) : 0,
+      linkType: element instanceof Element ? classifyElementLinkContext(element) : "none",
+    };
+  }
+
+  function collectWeixinDomImageUrls(root) {
+    const items = [];
+    const push = (url, kind, element = null) => {
+      const normalized = normalizeWeixinImageUrl(url);
+      if (isWeixinQpicImageUrl(normalized)) {
+        items.push({ url: normalized, kind, element });
+      }
+    };
+
+    Array.from(root.querySelectorAll("*")).forEach((element) => {
+      Array.from(element.attributes || []).forEach((attr) => {
+        collectWeixinUrlsFromText(attr.value).forEach((url) => push(url, `attr:${attr.name}`, element));
+      });
+    });
+
+    collectWeixinUrlsFromText(root.innerHTML || "").forEach((url) => push(url, "html-scan", root));
+    return items;
+  }
+
+  function collectWeixinUrlsFromText(value) {
+    const text = String(value || "");
+    if (!text || !/mmbiz\.qpic\.cn/i.test(text)) {
+      return [];
+    }
+
+    const urls = [];
+    const patterns = [
+      /https?:\\?\/\\?\/[^"'\\\s<>]+mmbiz\.qpic\.cn\\?\/[^"'\s<>)]+/gi,
+      /https?:\/\/[^"'\s<>]+mmbiz\.qpic\.cn\/[^"'\s<>)]+/gi,
+      /\/\/[^"'\s<>]+mmbiz\.qpic\.cn\/[^"'\s<>)]+/gi,
+    ];
+
+    patterns.forEach((pattern) => {
+      let match;
+      while ((match = pattern.exec(text)) !== null) {
+        const decoded = decodeEscapedUrl(match[0]);
+        if (decoded) {
+          urls.push(decoded);
+        }
+      }
+    });
+
+    return urls;
+  }
+
+  function isBetterWeixinCandidate(candidate, existing) {
+    const sourceRank = {
+      "data-src": 6,
+      "data-original": 5,
+      currentSrc: 4,
+      src: 3,
+      "html-scan": 1,
+    };
+    const leftRank = sourceRank[candidate.sourceKind] || (String(candidate.sourceKind || "").startsWith("attr:") ? 2 : 0);
+    const rightRank = sourceRank[existing.sourceKind] || (String(existing.sourceKind || "").startsWith("attr:") ? 2 : 0);
+    if (leftRank !== rightRank) {
+      return leftRank > rightRank;
+    }
+    return (candidate.area || 0) > (existing.area || 0);
+  }
+
+  function getWeixinMediaKey(rawUrl) {
+    const url = normalizeWeixinImageUrl(rawUrl);
+    if (!url) {
+      return "";
+    }
+
+    try {
+      const parsed = new URL(url);
+      const parts = parsed.pathname.split("/").filter(Boolean);
+      if (parts.length >= 2) {
+        return `${parsed.hostname}/${parts.slice(0, -1).join("/")}`;
+      }
+      return `${parsed.hostname}${parsed.pathname}`;
+    } catch {
+      return url.replace(/[?#].*$/, "");
+    }
+  }
+
+  function countWeixinCandidateSourceKinds(candidates) {
+    return candidates.reduce((counts, item) => {
+      const key = item.sourceKind || "unknown";
+      counts[key] = (counts[key] || 0) + 1;
+      return counts;
+    }, {});
+  }
+
+  function isLikelyWeixinUtilityImage(img) {
+    const src = String(img.currentSrc || img.src || img.getAttribute("data-src") || "").toLowerCase();
+    const text = `${img.alt || ""} ${img.className || ""} ${img.id || ""}`.toLowerCase();
+    if (/(avatar|headimg|profile|icon|logo|qr|qrcode|emoji|reward|comment|like|share|loading|placeholder)/i.test(src + " " + text)) {
+      return true;
+    }
+
+    const width = Number(img.naturalWidth || img.width || 0);
+    const height = Number(img.naturalHeight || img.height || 0);
+    return !!(width && height && (width < 120 || height < 80));
+  }
+
   function collectXiaohongshuHighResUrlsFromHtml() {
     const urls = new Set();
     const rawPreview = [];
@@ -2971,6 +3416,174 @@
     });
 
     return { urls, rawCount, imageCount, rawPreview, rejectedPreview };
+  }
+
+  async function collectWeixinOriginalProbe(mediaCandidates) {
+    const urls = new Set();
+    const meta = new Map();
+    const candidates = mediaCandidates.slice(0, 40);
+    const probes = await mapWithConcurrency(candidates, 4, async (candidate) => {
+      const sourceUrl = candidate.sourceUrl || (candidate.img ? getWeixinCandidateSourceUrl(candidate.img) : "");
+      if (!sourceUrl) {
+        return null;
+      }
+
+      const originalUrl = buildWeixinOriginalImageUrl(sourceUrl);
+      const probe = originalUrl && originalUrl !== sourceUrl ? await probeImageResource(originalUrl, 8000) : null;
+      const loadedWidth = Number(probe?.width || 0);
+      const loadedHeight = Number(probe?.height || 0);
+      const responseWidth = Number(probe?.responseWidth || 0);
+      const responseHeight = Number(probe?.responseHeight || 0);
+      const verifiedWidth = loadedWidth || responseWidth || 0;
+      const verifiedHeight = loadedHeight || responseHeight || 0;
+      const accepted = isAcceptableWeixinOriginalProbe(probe, candidate) || isWeixinOriginalImageResponse(probe, originalUrl);
+      const finalUrl = accepted ? originalUrl : sourceUrl;
+      const width = accepted ? verifiedWidth : candidate.width;
+      const height = accepted ? verifiedHeight : candidate.height;
+      const format = accepted ? inferFormatFromUrlOrProbe(originalUrl, probe) : inferFormat(sourceUrl);
+      const dimensionSource = accepted
+        ? (loadedWidth && loadedHeight ? "image-load" : (responseWidth && responseHeight ? "headers" : "unknown"))
+        : "rendered-fallback";
+
+      return {
+        finalUrl,
+        sourceUrl,
+        originalUrl,
+        accepted,
+        width,
+        height,
+        format,
+        contentType: probe?.contentType || "",
+        dimensionSource,
+        renderedWidth: candidate.width,
+        renderedHeight: candidate.height,
+        sourceKind: candidate.sourceKind || "",
+      };
+    });
+
+    probes.filter(Boolean).forEach((item) => {
+      urls.add(item.finalUrl);
+      meta.set(item.finalUrl, {
+        thumbnail: item.sourceUrl,
+        width: item.dimensionSource === "unknown" ? 0 : item.width,
+        height: item.dimensionSource === "unknown" ? 0 : item.height,
+        format: item.format,
+      });
+    });
+
+    return { urls, meta, probes: probes.filter(Boolean) };
+  }
+
+  function getWeixinCandidateSourceUrl(img) {
+    return getWeixinCandidateSourceInfo(img).url;
+  }
+
+  function getWeixinCandidateSourceInfo(img) {
+    const sources = [
+      { kind: "data-src", url: img.getAttribute("data-src") || "" },
+      { kind: "data-original", url: img.getAttribute("data-original") || "" },
+      { kind: "currentSrc", url: img.currentSrc || "" },
+      { kind: "src", url: img.src || "" },
+    ];
+
+    for (const source of sources) {
+      const normalized = normalizeWeixinImageUrl(source.url);
+      if (isWeixinQpicImageUrl(normalized)) {
+        return {
+          kind: source.kind,
+          url: normalized,
+        };
+      }
+    }
+
+    return { kind: "", url: "" };
+  }
+
+  function buildWeixinOriginalImageUrl(rawUrl) {
+    const sourceUrl = normalizeWeixinImageUrl(rawUrl);
+    if (!sourceUrl) {
+      return "";
+    }
+
+    try {
+      const parsed = new URL(sourceUrl);
+      if (!isWeixinQpicImageUrl(parsed.toString())) {
+        return "";
+      }
+
+      const parts = parsed.pathname.split("/");
+      const sizeIndex = parts.length - 1;
+      if (sizeIndex < 1) {
+        return "";
+      }
+
+      if (/^(?:0|[1-9]\d*|s\d+)$/i.test(parts[sizeIndex] || "")) {
+        parts[sizeIndex] = "0";
+      }
+
+      parsed.pathname = parts.join("/");
+      const format = inferWeixinQpicFormat(sourceUrl);
+      parsed.search = "";
+      if (format) {
+        parsed.searchParams.set("wx_fmt", format);
+      }
+      parsed.searchParams.set("from", "appmsg");
+      parsed.hash = "";
+      return parsed.toString();
+    } catch {
+      return "";
+    }
+  }
+
+  function inferWeixinQpicFormat(rawUrl) {
+    try {
+      const parsed = new URL(normalizeWeixinImageUrl(rawUrl));
+      const wxFmt = parsed.searchParams.get("wx_fmt") || "";
+      if (/^(?:jpeg|jpg|png|gif|webp)$/i.test(wxFmt)) {
+        return wxFmt.toLowerCase() === "jpg" ? "jpeg" : wxFmt.toLowerCase();
+      }
+
+      const hostPath = `${parsed.hostname}${parsed.pathname}`.toLowerCase();
+      if (/mmbiz_png/.test(hostPath)) return "png";
+      if (/mmbiz_gif/.test(hostPath)) return "gif";
+      if (/mmbiz_jpg|mmbiz_jpeg/.test(hostPath)) return "jpeg";
+    } catch {
+      return "";
+    }
+
+    return "";
+  }
+
+  function isAcceptableWeixinOriginalProbe(probe, candidate) {
+    if (!probe?.loaded) {
+      return false;
+    }
+
+    const width = Number(probe.width || probe.responseWidth || 0);
+    const height = Number(probe.height || probe.responseHeight || 0);
+    const renderedWidth = Number(candidate?.width || 0);
+    const renderedHeight = Number(candidate?.height || 0);
+    if (!width || !height) {
+      return false;
+    }
+
+    if (renderedWidth && width > renderedWidth + 8) {
+      return true;
+    }
+
+    if (renderedHeight && height > renderedHeight + 8) {
+      return true;
+    }
+
+    return width >= 1600 || height >= 1600;
+  }
+
+  function isWeixinOriginalImageResponse(probe, originalUrl) {
+    if (!probe || !/\/0(?:[?#]|$)/i.test(String(originalUrl || ""))) {
+      return false;
+    }
+
+    return /^image\/(?:png|jpe?g|webp|gif)/i.test(String(probe.contentType || ""));
   }
 
   async function collectXiaohongshuEnlargedMedia(mediaCandidates) {
@@ -3986,7 +4599,11 @@
   }
 
   function classifyLinkContext(img) {
-    const anchor = img.closest("a[href]");
+    return classifyElementLinkContext(img);
+  }
+
+  function classifyElementLinkContext(element) {
+    const anchor = element?.closest?.("a[href]");
     if (!anchor) {
       return "none";
     }
@@ -4016,6 +4633,12 @@
 
     if (/weibo\.com$/i.test(location.hostname)) {
       if (/\/(?:u\/)?\d+\/?$/i.test(href) || /\/profile\//i.test(href)) {
+        return "profile";
+      }
+    }
+
+    if (/weixin\.qq\.com$/i.test(location.hostname)) {
+      if (/profile|__biz=|bizprofile/i.test(href)) {
         return "profile";
       }
     }

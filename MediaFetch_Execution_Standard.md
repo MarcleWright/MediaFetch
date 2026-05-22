@@ -627,6 +627,56 @@ Resolution:
 5. For Sina image URLs, prefer fetching the image body first and then downloading a local `blob:` URL instead of passing the remote CDN URL directly to Chrome downloads.
 6. Keep the direct remote download path only as a fallback when blob download is unnecessary or unsupported.
 
+### Weixin
+
+#### Goal
+
+Prefer article-body images from WeChat public article pages and probe `mmbiz.qpic.cn` display URLs for source-size variants.
+
+#### Image Parsing
+
+Prefer:
+
+- images inside `#js_content`, `.rich_media_content`, `#img-content`, `article`, or `main`
+- `mmbiz.qpic.cn/mmbiz_*` and `mmbiz.qpic.cn/sz_mmbiz_*` image URLs from `data-src`, `data-original`, `currentSrc`, `src`, other DOM attributes, and rendered article HTML
+
+De-prioritize:
+
+- avatars
+- profile links
+- QR codes
+- emoji, logo, share, loading, and other utility images
+
+#### Original Selection
+
+Chrome-plugin Weixin extraction should:
+
+1. Restrict Weixin `Original` candidates to confirmed article-body `mmbiz.qpic.cn` images.
+2. Derive source-size candidates by replacing numeric display-size path segments such as `/640` with `/0`.
+3. Read article image URLs from DOM attributes such as `data-src` and from rendered article HTML before relying on lazy-loaded rendered dimensions.
+4. Remove display-only query noise such as WebP/lazy-loading parameters when building the source probe URL.
+5. Preserve the best inferred `wx_fmt` and add `from=appmsg` for the probe URL.
+6. Validate the derived URL before accepting it as `Original`.
+7. Fall back to the rendered article image when the source-size probe fails.
+
+Required Weixin debug fields:
+
+- container detection result
+- rendered candidate preview
+- derived original URL preview
+- probe acceptance, verified dimensions, content type, and final accepted URL
+
+#### Project Identity and File Naming
+
+For standard short article URLs:
+
+- URL pattern: `https://mp.weixin.qq.com/s/<projectid>`
+- store `<projectid>` as `metadata.projectId`
+- normalize the project URL to `https://mp.weixin.qq.com/s/<projectid>`
+- downloaded image files use the existing project-id prefix rule:
+  - `<projectid>_001.png`
+  - `<projectid>_002.png`
+
 ### Xiaohongshu
 
 #### Goal
@@ -935,6 +985,7 @@ When a domain rule changes, update this document with:
   - uses the current Weibo page URL as the Sina image request `Referer`
   - for Sina image URLs, fetches the image body first and then downloads a local blob URL instead of downloading the remote URL directly
   - avoids the browser saving anti-hotlink HTML responses such as `001.htm`
+
 - updated Chrome-plugin content build to `contentBuildHash: 1108`
   - Weibo folder naming now uses `author_yymmddhhmm` with fallback to author, then status id
   - Xiaohongshu now keeps broad extraction but uses a note-content whitelist for `Original` labeling
@@ -973,3 +1024,15 @@ When a domain rule changes, update this document with:
 - refined Behance author identity handling
   - Behance folder naming now uses the readable display author name as `username`
   - Behance metadata stores the stable profile slug as `authorId`
+
+### 2026-05-22
+
+- added Chrome-plugin Weixin extraction rule for `contentBuildHash: 1140`
+  - probes article-body `mmbiz.qpic.cn` display URLs such as `/640?...` as `/0?wx_fmt=...&from=appmsg`
+  - collects unloaded article images from DOM attributes and rendered article HTML so manual scrolling is not required
+  - supports both `mmbiz_*` and `sz_mmbiz_*` Weixin CDN path families
+  - uses the scanned candidate URL directly during probe so non-`img` attribute and HTML-scan candidates are not dropped
+  - allows slower `/0` PNG probes and accepts verified image responses even when dimensions are unavailable before timeout
+  - extracts `projectId` from standard `/s/<projectid>` article URLs for metadata and download filename prefixes
+  - validates derived source-size URLs before marking them as `Original`
+  - exposes dedicated `debug.weixin.original` probe details for diagnosis
