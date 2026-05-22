@@ -1027,12 +1027,15 @@ When a domain rule changes, update this document with:
 
 ### 2026-05-22
 
-- added Chrome-plugin Weixin extraction rule for `contentBuildHash: 1140`
+- added Chrome-plugin Weixin extraction rule for `contentBuildHash: 1143`
   - probes article-body `mmbiz.qpic.cn` display URLs such as `/640?...` as `/0?wx_fmt=...&from=appmsg`
   - collects unloaded article images from DOM attributes and rendered article HTML so manual scrolling is not required
   - supports both `mmbiz_*` and `sz_mmbiz_*` Weixin CDN path families
   - uses the scanned candidate URL directly during probe so non-`img` attribute and HTML-scan candidates are not dropped
   - allows slower `/0` PNG probes and accepts verified image responses even when dimensions are unavailable before timeout
   - extracts `projectId` from standard `/s/<projectid>` article URLs for metadata and download filename prefixes
+  - adds a body-level fallback scan when the best article container misses valid Weixin CDN images
+  - bridges generic extracted `mmbiz.qpic.cn` images back into the Weixin `/0` validation path before final `Original` labeling
+  - injects domain original URLs only after all rendered and bridge candidates are complete, so bridge-accepted URLs appear in final results
   - validates derived source-size URLs before marking them as `Original`
   - exposes dedicated `debug.weixin.original` probe details for diagnosis

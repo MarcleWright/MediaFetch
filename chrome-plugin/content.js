@@ -1,5 +1,5 @@
 (() => {
-  const CONTENT_BUILD_HASH = "1140";
+  const CONTENT_BUILD_HASH = "1143";
   const XIAOHONGSHU_DISPLAY_NAME = "\u5c0f\u7ea2\u4e66";
   const XIAOHONGSHU_SUFFIX_PATTERN = /\s*[|\-]\s*(?:\u5c0f\u7ea2\u4e66|Xiaohongshu)\b.*$/i;
   const XIAOHONGSHU_TITLE_PATTERN = /^(.{1,80}?)\s*(?:\u7684|on)\s*(?:\u5c0f\u7ea2\u4e66|Xiaohongshu)/i;
@@ -236,24 +236,6 @@
       }
     };
 
-    if ((/(instagram\.com|behance\.net|weibo\.com|weixin\.qq\.com)$/i.test(location.hostname) || isXiaohongshuHost()) && domainOriginalUrls?.size) {
-      domainOriginalUrls.forEach((url) => {
-        const originalMeta = platformMedia.originalUrlMeta?.get?.(url) || {};
-        push(url, {
-          ...originalMeta,
-          sourceHint: /behance\.net$/i.test(location.hostname)
-            ? "behance-original"
-            : /weibo\.com$/i.test(location.hostname)
-              ? "weibo-original"
-              : /weixin\.qq\.com$/i.test(location.hostname)
-                ? "weixin-original"
-                : isXiaohongshuHost()
-                  ? "xiaohongshu-original"
-                  : "instagram-sampled",
-        });
-      });
-    }
-
     document.querySelectorAll("img").forEach((img) => {
       push(img.currentSrc || img.src, {
         width: img.naturalWidth || img.width || 0,
@@ -285,6 +267,9 @@
         sourceHint: "rendered-meta",
       });
     });
+
+    await augmentWeixinOriginalsFromExtractedItems(platformMedia, items);
+    pushDomainOriginalUrls(platformMedia, push);
 
     const sorted = items
       .sort((a, b) => {
@@ -355,6 +340,33 @@
     });
 
     return { accepted, rejected };
+  }
+
+  function pushDomainOriginalUrls(platformMedia, push) {
+    const domainOriginalUrls = platformMedia?.originalUrls || null;
+    if (!domainOriginalUrls?.size) {
+      return;
+    }
+
+    if (!(/(instagram\.com|behance\.net|weibo\.com|weixin\.qq\.com)$/i.test(location.hostname) || isXiaohongshuHost())) {
+      return;
+    }
+
+    domainOriginalUrls.forEach((url) => {
+      const originalMeta = platformMedia.originalUrlMeta?.get?.(url) || {};
+      push(url, {
+        ...originalMeta,
+        sourceHint: /behance\.net$/i.test(location.hostname)
+          ? "behance-original"
+          : /weibo\.com$/i.test(location.hostname)
+            ? "weibo-original"
+            : /weixin\.qq\.com$/i.test(location.hostname)
+              ? "weixin-original"
+              : isXiaohongshuHost()
+                ? "xiaohongshu-original"
+                : "instagram-sampled",
+      });
+    });
   }
 
   function inferProjectName() {
@@ -1970,7 +1982,7 @@
     }
 
     const root = findWeixinArticleContainer();
-    const candidateImages = root ? collectWeixinArticleImageCandidates(root) : [];
+    const candidateImages = collectWeixinArticleImageCandidates(root || document.body);
 
     const originalProbe = await collectWeixinOriginalProbe(candidateImages);
     media.originalUrls = originalProbe.urls.size ? originalProbe.urls : null;
@@ -1979,6 +1991,7 @@
       containerFound: !!root,
       containerTag: root ? root.tagName : null,
       candidateCount: candidateImages.length,
+      bodyFallbackCandidateCount: candidateImages.filter((item) => item.sourceScope === "body-fallback").length,
       probeCount: originalProbe.probes.length,
       acceptedCount: originalProbe.probes.filter((item) => item.accepted).length,
       acceptedOriginalCount: originalProbe.probes.filter((item) => item.accepted && item.finalUrl === item.originalUrl).length,
@@ -1987,6 +2000,7 @@
         width: candidate.width,
         height: candidate.height,
         sourceKind: candidate.sourceKind,
+        sourceScope: candidate.sourceScope,
       })),
       sourceKindCounts: countWeixinCandidateSourceKinds(candidateImages),
       probePreview: originalProbe.probes.slice(0, 8),
@@ -3196,14 +3210,23 @@
     });
 
     collectWeixinDomImageUrls(root).forEach((item) => {
-      push(buildWeixinUrlCandidate(item.url, item.kind, item.element));
+      push(buildWeixinUrlCandidate(item.url, item.kind, item.element, "article-root"));
     });
+
+    if (root !== document.body && document.body) {
+      Array.from(document.body.querySelectorAll("img")).forEach((img) => {
+        push(buildWeixinArticleImageCandidate(img, "body-fallback"));
+      });
+      collectWeixinDomImageUrls(document.body).forEach((item) => {
+        push(buildWeixinUrlCandidate(item.url, item.kind, item.element, "body-fallback"));
+      });
+    }
 
     return Array.from(byKey.values())
       .sort((a, b) => a.top - b.top);
   }
 
-  function buildWeixinArticleImageCandidate(img) {
+  function buildWeixinArticleImageCandidate(img, sourceScope = "article-root") {
     if (isLikelyWeixinUtilityImage(img)) {
       return null;
     }
@@ -3228,6 +3251,7 @@
       img,
       sourceUrl: source.url,
       sourceKind: source.kind,
+      sourceScope,
       width,
       height,
       area: width * height,
@@ -3236,7 +3260,7 @@
     };
   }
 
-  function buildWeixinUrlCandidate(rawUrl, sourceKind, element = null) {
+  function buildWeixinUrlCandidate(rawUrl, sourceKind, element = null, sourceScope = "article-root") {
     const sourceUrl = normalizeWeixinImageUrl(rawUrl);
     if (!isWeixinQpicImageUrl(sourceUrl)) {
       return null;
@@ -3263,6 +3287,7 @@
       img: element?.tagName === "IMG" ? element : null,
       sourceUrl,
       sourceKind,
+      sourceScope,
       width,
       height,
       area: width * height,
@@ -3328,6 +3353,9 @@
     const rightRank = sourceRank[existing.sourceKind] || (String(existing.sourceKind || "").startsWith("attr:") ? 2 : 0);
     if (leftRank !== rightRank) {
       return leftRank > rightRank;
+    }
+    if (candidate.sourceScope !== existing.sourceScope) {
+      return candidate.sourceScope === "article-root";
     }
     return (candidate.area || 0) > (existing.area || 0);
   }
@@ -3458,6 +3486,7 @@
         renderedWidth: candidate.width,
         renderedHeight: candidate.height,
         sourceKind: candidate.sourceKind || "",
+        sourceScope: candidate.sourceScope || "",
       };
     });
 
@@ -3472,6 +3501,57 @@
     });
 
     return { urls, meta, probes: probes.filter(Boolean) };
+  }
+
+  async function augmentWeixinOriginalsFromExtractedItems(platformMedia, items) {
+    if (!isWeixinHost() || !platformMedia || !Array.isArray(items) || !items.length) {
+      return;
+    }
+
+    const originalUrls = platformMedia.originalUrls || new Set();
+    const originalMeta = platformMedia.originalUrlMeta || new Map();
+    const knownKeys = new Set(Array.from(originalUrls).map((url) => getWeixinMediaKey(url)).filter(Boolean));
+    const candidates = [];
+
+    items.forEach((item) => {
+      const sourceUrl = normalizeWeixinImageUrl(item?.url || "");
+      if (!isWeixinQpicImageUrl(sourceUrl)) {
+        return;
+      }
+
+      const key = getWeixinMediaKey(sourceUrl);
+      if (key && knownKeys.has(key)) {
+        return;
+      }
+
+      if (key) {
+        knownKeys.add(key);
+      }
+      candidates.push({
+        img: null,
+        sourceUrl,
+        sourceKind: item?.sourceHint || "generic-items",
+        sourceScope: "generic-items",
+        width: Number(item?.width || 0),
+        height: Number(item?.height || 0),
+        area: Number(item?.area || 0),
+        top: 0,
+        linkType: "none",
+      });
+    });
+
+    const probe = await collectWeixinOriginalProbe(candidates);
+    probe.urls.forEach((url) => originalUrls.add(url));
+    probe.meta.forEach((value, url) => originalMeta.set(url, value));
+
+    platformMedia.originalUrls = originalUrls.size ? originalUrls : null;
+    platformMedia.originalUrlMeta = originalMeta.size ? originalMeta : null;
+    platformMedia.debug.original = {
+      ...(platformMedia.debug.original || {}),
+      genericBridgeCandidateCount: candidates.length,
+      genericBridgeAcceptedCount: probe.probes.filter((item) => item.accepted).length,
+      genericBridgePreview: probe.probes.slice(0, 8),
+    };
   }
 
   function getWeixinCandidateSourceUrl(img) {

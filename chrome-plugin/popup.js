@@ -250,7 +250,7 @@ async function extractFromCurrentTab() {
       tabId: tab.id,
       tabUrl: tab.url || "",
       version: "0.2.1",
-      contentBuildHash: "1140",
+      contentBuildHash: "1143",
     });
 
     const instagramNav = await resolveInstagramNavigationContext(tab);
@@ -295,7 +295,7 @@ async function extractFromCurrentTab() {
     const debug = response.debug || {};
     debug.client = {
       version: "0.2.1",
-      contentBuildHash: "1140",
+      contentBuildHash: "1143",
       probeError,
       instagramSamplingError,
       weiboSamplingError,
@@ -1545,7 +1545,7 @@ async function probeLineageConnection() {
   setLineageStatus("Running Lineage probe...", false);
   const settings = await getLineageSettings();
   const probe = {
-    contentBuildHash: "1140",
+    contentBuildHash: "1143",
     featureEnabled: lineageFeatureEnabled,
     baseUrl: settings.baseUrl,
     tokenPresent: !!settings.token,
