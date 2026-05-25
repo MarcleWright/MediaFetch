@@ -1,5 +1,5 @@
 (() => {
-  const CONTENT_BUILD_HASH = "1145";
+  const CONTENT_BUILD_HASH = "1148";
   const XIAOHONGSHU_DISPLAY_NAME = "\u5c0f\u7ea2\u4e66";
   const XIAOHONGSHU_SUFFIX_PATTERN = /\s*[|\-]\s*(?:\u5c0f\u7ea2\u4e66|Xiaohongshu)\b.*$/i;
   const XIAOHONGSHU_TITLE_PATTERN = /^(.{1,80}?)\s*(?:\u7684|on)\s*(?:\u5c0f\u7ea2\u4e66|Xiaohongshu)/i;
@@ -1289,6 +1289,159 @@
     };
   }
 
+  function collectWeiboAlbumProbe() {
+    const parsed = parseWeiboAlbumUrl(location.href);
+    if (!parsed) {
+      return null;
+    }
+
+    const candidates = collectWeiboAlbumProjectCandidates(parsed.uid);
+    const best = candidates[0] || null;
+    return {
+      isAlbumUrl: true,
+      uid: parsed.uid,
+      index: parsed.index,
+      resolvedProjectId: best?.projectId || "",
+      resolvedDetailUrl: best?.detailUrl || "",
+      source: best?.source || "",
+      candidateCount: candidates.length,
+      candidatePreview: candidates.slice(0, 12),
+    };
+  }
+
+  function parseWeiboAlbumUrl(value) {
+    try {
+      const parsed = new URL(String(value || ""));
+      if (!/^(?:www\.)?weibo\.com$/i.test(parsed.hostname)) {
+        return null;
+      }
+
+      if (parsed.searchParams.get("tabtype") !== "album") {
+        return null;
+      }
+
+      const uid = String(parsed.searchParams.get("uid") || "").trim();
+      const index = Number.parseInt(parsed.searchParams.get("index") || "", 10);
+      if (!/^\d+$/.test(uid) || !Number.isFinite(index)) {
+        return null;
+      }
+
+      return { uid, index };
+    } catch {
+      return null;
+    }
+  }
+
+  function collectWeiboAlbumProjectCandidates(uid) {
+    const dedupe = new Set();
+    const results = [];
+    const roots = findWeiboAlbumActiveRoots();
+    const escapedUid = String(uid || "").replace(/[.*+?^${}()|[\]\\]/g, "\\$&");
+    const directPattern = new RegExp(`(?:https?:)?\\/\\/weibo\\.com\\/${escapedUid}\\/([A-Za-z0-9]{4,})`, "ig");
+    const shortPattern = /\/detail\/([A-Za-z0-9]{4,})/ig;
+
+    const push = (projectId, source, score, rawValue) => {
+      const normalized = normalizeWeiboProjectId(projectId);
+      if (!normalized) {
+        return;
+      }
+
+      const detailUrl = `https://weibo.com/${uid}/${normalized}`;
+      const key = `${normalized}|${detailUrl}`;
+      if (dedupe.has(key)) {
+        return;
+      }
+
+      dedupe.add(key);
+      results.push({
+        projectId: normalized,
+        detailUrl,
+        source,
+        score,
+        rawValue: String(rawValue || "").slice(0, 240),
+      });
+    };
+
+    roots.forEach((root) => {
+      const scope = root || document;
+      const nodes = Array.from(scope.querySelectorAll?.("a[href], [action-data], [data-url], [data-href], [data-mid], [mid], [mblogid]") || []);
+      nodes.forEach((node) => {
+        ["href", "action-data", "data-url", "data-href", "data-mid", "mid", "mblogid"].forEach((attrName) => {
+          const raw = node.getAttribute?.(attrName) || "";
+          if (raw) {
+            collectWeiboAlbumProjectCandidatesFromText(raw, `attr:${attrName}`);
+          }
+        });
+      });
+
+      collectWeiboAlbumProjectCandidatesFromText(scope.innerHTML || "", "html");
+    });
+
+    collectWeiboAlbumProjectCandidatesFromText(document.documentElement?.innerHTML || "", "document");
+
+    results.sort((left, right) => right.score - left.score || left.projectId.localeCompare(right.projectId));
+    return results;
+
+    function collectWeiboAlbumProjectCandidatesFromText(value, source) {
+      const text = String(value || "").replace(/&amp;/g, "&");
+      if (!text) {
+        return;
+      }
+
+      let match;
+      while ((match = directPattern.exec(text)) !== null) {
+        push(match[1], source, 100, text);
+      }
+
+      while ((match = shortPattern.exec(text)) !== null) {
+        push(match[1], source, 70, text);
+      }
+
+      const detailAlt = text.match(/(?:projectid|project_id|mblogid|mid)["'=:%\s]+([A-Za-z0-9]{4,})/i);
+      if (detailAlt?.[1]) {
+        push(detailAlt[1], source, 30, text);
+      }
+    }
+  }
+
+  function findWeiboAlbumActiveRoots() {
+    const selectors = [
+      "main",
+      "[role='dialog']",
+      "[aria-modal='true']",
+      '[class*="album"]',
+      '[class*="Album"]',
+      '[class*="photo"]',
+      '[class*="Photo"]',
+      '[class*="modal"]',
+      '[class*="Modal"]',
+      '[class*="dialog"]',
+      '[class*="Dialog"]',
+      '[class*="layer"]',
+      '[class*="Layer"]',
+    ];
+
+    const roots = [];
+    selectors.forEach((selector) => {
+      Array.from(document.querySelectorAll(selector)).forEach((node) => {
+        if (node instanceof Element && !roots.includes(node)) {
+          roots.push(node);
+        }
+      });
+    });
+
+    if (!roots.length) {
+      roots.push(document.body || document.documentElement);
+    }
+
+    return roots.filter(Boolean).slice(0, 12);
+  }
+
+  function normalizeWeiboProjectId(value) {
+    const text = String(value || "").trim();
+    return /^[A-Za-z0-9]{4,}$/.test(text) ? text : "";
+  }
+
   function collectWeiboTimeCandidates() {
     const candidates = [];
     const seen = new Set();
@@ -2395,6 +2548,7 @@
     if (/weibo\.com$/i.test(location.hostname)) {
       debug.weibo = {
         statusId: extractWeiboStatusId(location.href),
+        album: collectWeiboAlbumProbe(),
         timeProbe: collectWeiboTimeProbe(),
         original: mediaDebug.original,
         externalSampling: mediaDebug.externalSampling,

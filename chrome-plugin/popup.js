@@ -250,7 +250,7 @@ async function extractFromCurrentTab() {
       tabId: tab.id,
       tabUrl: tab.url || "",
       version: "0.2.1",
-      contentBuildHash: "1145",
+      contentBuildHash: "1148",
     });
 
     const instagramNav = await resolveInstagramNavigationContext(tab);
@@ -280,9 +280,44 @@ async function extractFromCurrentTab() {
 
     const sampledUrls = [...instagramSamples.urls, ...weiboSamples.urls];
     const sampledIndexes = [...instagramSamples.indexes, ...weiboSamples.layerIds];
-    const response = await requestExtraction(tab, maxIndexHint, sampledUrls, sampledIndexes);
+    let response = await requestExtraction(tab, maxIndexHint, sampledUrls, sampledIndexes);
     if (!response?.ok) {
       throw new Error(response?.error || "Extraction failed.");
+    }
+
+    const originalTabUrl = String(tab.url || "");
+    const albumDebug = response?.debug?.weibo?.album || null;
+    const albumDetailUrl = getWeiboAlbumResolvedDetailUrl(albumDebug);
+    let albumRedirectedToDetail = false;
+    let albumRedirectError = "";
+    if (isWeiboAlbumUrl(originalTabUrl) && albumDetailUrl && normalizeHttpUrl(albumDetailUrl) && normalizeHttpUrl(albumDetailUrl) !== normalizeHttpUrl(originalTabUrl)) {
+      try {
+        const detailTab = await chrome.tabs.create({
+          url: albumDetailUrl,
+          active: true,
+          index: typeof tab.index === "number" ? tab.index + 1 : undefined,
+        });
+        await waitForTabComplete(detailTab.id, 15000);
+        await delay(1200);
+
+        weiboSamples = await collectWeiboRenderedSamples(detailTab);
+
+        const redirectedSampledUrls = [...instagramSamples.urls, ...weiboSamples.urls];
+        const redirectedSampledIndexes = [...instagramSamples.indexes, ...weiboSamples.layerIds];
+        const redirectedResponse = await requestExtraction(detailTab, maxIndexHint, redirectedSampledUrls, redirectedSampledIndexes);
+        if (!redirectedResponse?.ok) {
+          throw new Error(redirectedResponse?.error || "Extraction failed.");
+        }
+
+        response = redirectedResponse;
+        albumRedirectedToDetail = true;
+        if (response.debug && albumDebug) {
+          response.debug.weibo = response.debug.weibo || {};
+          response.debug.weibo.album = albumDebug;
+        }
+      } catch (error) {
+        albumRedirectError = error instanceof Error ? error.message : String(error);
+      }
     }
 
     state.images = (response.images || []).map((item) => ({
@@ -295,7 +330,7 @@ async function extractFromCurrentTab() {
     const debug = response.debug || {};
     debug.client = {
       version: "0.2.1",
-      contentBuildHash: "1145",
+      contentBuildHash: "1148",
       probeError,
       instagramSamplingError,
       weiboSamplingError,
@@ -307,6 +342,12 @@ async function extractFromCurrentTab() {
       instagramSampledUrlCount: instagramSamples.urls?.length || 0,
       weiboSampleLayerIds: weiboSamples.layerIds || [],
       weiboSampledUrlCount: weiboSamples.urls?.length || 0,
+      weiboAlbumSamplingPaused: isWeiboAlbumUrl(originalTabUrl),
+      weiboAlbumResolvedDetailUrl: albumDetailUrl || "",
+      weiboAlbumRedirectedToDetail: albumRedirectedToDetail,
+      weiboAlbumOpenedProjectTab: albumRedirectedToDetail,
+      weiboAlbumRedirectError: albumRedirectError,
+      weiboAlbumSourceUrl: originalTabUrl,
     };
     renderDebugInfo(debug);
 
@@ -349,6 +390,28 @@ async function requestExtraction(tab, maxIndexHint = 0, sampledUrls = [], sample
     } catch {
       throw new Error("Could not connect to the page. Reload the tab once and try again.");
     }
+  }
+}
+
+function getWeiboAlbumResolvedDetailUrl(albumDebug) {
+  const url = normalizeHttpUrl(albumDebug?.resolvedDetailUrl || "");
+  if (!url) {
+    return "";
+  }
+
+  try {
+    const parsed = new URL(url);
+    if (!/^https:\/\/weibo\.com$/i.test(`${parsed.protocol}//${parsed.hostname}`)) {
+      return "";
+    }
+
+    if (!/^\/\d+\/[A-Za-z0-9]+\/?$/.test(parsed.pathname)) {
+      return "";
+    }
+
+    return parsed.toString();
+  } catch {
+    return "";
   }
 }
 
@@ -406,6 +469,19 @@ async function collectInstagramRenderedSamples(tab, resolvedPostPath = "", maxIn
   };
 }
 
+function isWeiboAlbumUrl(value) {
+  try {
+    const parsed = new URL(String(value || ""));
+    return /^https:\/\/weibo\.com$/i.test(`${parsed.protocol}//${parsed.hostname}`) &&
+      /^\/\d+\/?$/.test(parsed.pathname) &&
+      parsed.searchParams.get("tabtype") === "album" &&
+      /^\d+$/.test(parsed.searchParams.get("uid") || "") &&
+      /^\d+$/.test(parsed.searchParams.get("index") || "");
+  } catch {
+    return false;
+  }
+}
+
 async function requestInstagramRenderedSnapshot(tab) {
   try {
     const response = await chrome.tabs.sendMessage(tab.id, { type: "mediafetch:instagram-rendered-snapshot" });
@@ -423,6 +499,10 @@ async function requestInstagramRenderedSnapshot(tab) {
 async function collectWeiboRenderedSamples(tab) {
   const url = String(tab?.url || "");
   if (!/^https:\/\/weibo\.com\//i.test(url) || !tab?.id) {
+    return { urls: [], layerIds: [] };
+  }
+
+  if (isWeiboAlbumUrl(url)) {
     return { urls: [], layerIds: [] };
   }
 
@@ -1545,7 +1625,7 @@ async function probeLineageConnection() {
   setLineageStatus("Running Lineage probe...", false);
   const settings = await getLineageSettings();
   const probe = {
-    contentBuildHash: "1145",
+    contentBuildHash: "1148",
     featureEnabled: lineageFeatureEnabled,
     baseUrl: settings.baseUrl,
     tokenPresent: !!settings.token,

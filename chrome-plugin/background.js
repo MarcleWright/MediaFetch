@@ -208,12 +208,44 @@ async function downloadOriginalsFromTab(tab) {
   const instagramNav = await resolveInstagramNavigationContext(tab);
   const maxIndexHint = await probeInstagramMaxIndex(tab, instagramNav);
   const instagramSamples = await collectInstagramRenderedSamples(tab, instagramNav.resolvedPostPath, maxIndexHint);
-  const weiboSamples = await collectWeiboRenderedSamples(tab);
+  let weiboSamples = await collectWeiboRenderedSamples(tab);
   const sampledUrls = [...instagramSamples.urls, ...weiboSamples.urls];
   const sampledIndexes = [...instagramSamples.indexes, ...weiboSamples.layerIds];
-  const response = await requestExtraction(tab, maxIndexHint, sampledUrls, sampledIndexes);
+  let response = await requestExtraction(tab, maxIndexHint, sampledUrls, sampledIndexes);
   if (!response?.ok) {
     throw new Error(response?.error || "Extraction failed.");
+  }
+
+  const originalTabUrl = String(tab.url || "");
+  const albumDebug = response?.debug?.weibo?.album || null;
+  const albumDetailUrl = getWeiboAlbumResolvedDetailUrl(albumDebug);
+  if (isWeiboAlbumUrl(originalTabUrl) && albumDetailUrl && normalizeHttpUrl(albumDetailUrl) && normalizeHttpUrl(albumDetailUrl) !== normalizeHttpUrl(originalTabUrl)) {
+    try {
+      const detailTab = await chrome.tabs.create({
+        url: albumDetailUrl,
+        active: true,
+        index: typeof tab.index === "number" ? tab.index + 1 : undefined,
+      });
+      await waitForTabComplete(detailTab.id, 15000);
+      await delay(1200);
+
+      weiboSamples = await collectWeiboRenderedSamples(detailTab);
+
+      const redirectedSampledUrls = [...instagramSamples.urls, ...weiboSamples.urls];
+      const redirectedSampledIndexes = [...instagramSamples.indexes, ...weiboSamples.layerIds];
+      const redirectedResponse = await requestExtraction(detailTab, maxIndexHint, redirectedSampledUrls, redirectedSampledIndexes);
+      if (!redirectedResponse?.ok) {
+        throw new Error(redirectedResponse?.error || "Extraction failed.");
+      }
+
+      response = redirectedResponse;
+      if (response.debug && albumDebug) {
+        response.debug.weibo = response.debug.weibo || {};
+        response.debug.weibo.album = albumDebug;
+      }
+    } catch {
+      // Keep the album-page response if the redirect path fails.
+    }
   }
 
   const originals = (response.images || []).filter((item) => item?.isOriginal);
@@ -231,7 +263,7 @@ async function downloadOriginalsFromTab(tab) {
   await downloadImageBatch(originals, {
     folder,
     metadata,
-    pageUrl: tab.url || "",
+    pageUrl: response.pageUrl || tab.url || "",
     convertHeicToPng: await getStoredConvertHeicToPng(),
   });
 }
@@ -632,6 +664,28 @@ async function requestExtraction(tab, maxIndexHint = 0, sampledUrls = [], sample
   }
 }
 
+function getWeiboAlbumResolvedDetailUrl(albumDebug) {
+  const url = normalizeHttpUrl(albumDebug?.resolvedDetailUrl || "");
+  if (!url) {
+    return "";
+  }
+
+  try {
+    const parsed = new URL(url);
+    if (!/^https:\/\/weibo\.com$/i.test(`${parsed.protocol}//${parsed.hostname}`)) {
+      return "";
+    }
+
+    if (!/^\/\d+\/[A-Za-z0-9]+\/?$/.test(parsed.pathname)) {
+      return "";
+    }
+
+    return parsed.toString();
+  } catch {
+    return "";
+  }
+}
+
 async function collectInstagramRenderedSamples(tab, resolvedPostPath = "", maxIndexHint = 0) {
   const url = String(tab?.url || "");
   if (!maxIndexHint || !/https:\/\/www\.instagram\.com\//i.test(url)) {
@@ -699,6 +753,10 @@ async function collectWeiboRenderedSamples(tab) {
     return { urls: [], layerIds: [] };
   }
 
+  if (isWeiboAlbumUrl(url)) {
+    return { urls: [], layerIds: [] };
+  }
+
   const hints = await requestWeiboLayerHints(tab.id);
   const layerIds = Array.from(new Set(hints?.layerIds || [])).slice(0, 12);
   if (!layerIds.length) {
@@ -736,6 +794,19 @@ async function collectWeiboRenderedSamples(tab) {
     urls: Array.from(urls),
     layerIds,
   };
+}
+
+function isWeiboAlbumUrl(value) {
+  try {
+    const parsed = new URL(String(value || ""));
+    return /^https:\/\/weibo\.com$/i.test(`${parsed.protocol}//${parsed.hostname}`) &&
+      /^\/\d+\/?$/.test(parsed.pathname) &&
+      parsed.searchParams.get("tabtype") === "album" &&
+      /^\d+$/.test(parsed.searchParams.get("uid") || "") &&
+      /^\d+$/.test(parsed.searchParams.get("index") || "");
+  } catch {
+    return false;
+  }
 }
 
 async function requestWeiboLayerHints(tabId) {
