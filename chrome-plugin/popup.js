@@ -58,6 +58,7 @@ const defaultLineageToken = String(features.defaultLineageToken || "").trim();
 const eagleFeatureEnabled = features.eagleIntegration !== false;
 const defaultEagleBaseUrl = normalizeEagleBaseUrl(features.defaultEagleBaseUrl || "http://localhost:41595");
 const debugPanelEnabled = features.debugPanel !== false;
+const WEIBO_ALBUM_EXTRACTION_MODE = "background";
 const lineageFolderTreeState = {
   folders: [],
   selectedId: "",
@@ -250,8 +251,77 @@ async function extractFromCurrentTab() {
       tabId: tab.id,
       tabUrl: tab.url || "",
       version: "0.2.1",
-      contentBuildHash: "1148",
+      contentBuildHash: "1149",
     });
+
+    const originalTabUrl = String(tab.url || "");
+    if (isWeiboAlbumUrl(originalTabUrl)) {
+      let albumProbe = null;
+      let albumProbeError = "";
+      try {
+        albumProbe = await requestWeiboAlbumProbe(tab);
+      } catch (error) {
+        albumProbeError = error instanceof Error ? error.message : String(error);
+      }
+
+      const albumDebug = albumProbe?.album || null;
+      const albumDetailUrl = getWeiboAlbumResolvedDetailUrl(albumDebug);
+      if (!albumDetailUrl) {
+        throw new Error(albumProbeError || "Could not resolve Weibo album project ID.");
+      }
+
+      const response = await requestWeiboAlbumExtractionInBackground(albumDetailUrl, 0, tab.index);
+      if (!response?.ok) {
+        throw new Error(response?.error || "Weibo album background extraction failed.");
+      }
+
+      state.images = (response.response?.images || response.images || []).map((item) => ({
+        ...item,
+        selected: false,
+      }));
+      const previousProjectName = state.projectName || "";
+      state.projectName = response.response?.projectName || response.projectName || "ProjectsA";
+      state.metadata = response.response?.metadata || response.metadata || null;
+      const debug = (response.response?.debug || response.debug || {});
+      debug.client = {
+        version: "0.2.1",
+        contentBuildHash: "1149",
+        probeError: "",
+        instagramSamplingError: "",
+        weiboSamplingError: "",
+        instagramResolvedPostPath: "",
+        instagramInitialCarouselCount: 0,
+        instagramContextSource: "",
+        maxIndexHint: 0,
+        instagramSampleIndexes: [],
+        instagramSampledUrlCount: 0,
+        weiboSampleLayerIds: [],
+        weiboSampledUrlCount: 0,
+        weiboAlbumSamplingPaused: true,
+        weiboAlbumProbeOnly: true,
+        weiboAlbumProbeError: albumProbeError,
+        weiboAlbumResolvedDetailUrl: albumDetailUrl,
+        weiboAlbumRedirectedToDetail: true,
+        weiboAlbumOpenedProjectTab: false,
+        weiboAlbumExtractionMode: WEIBO_ALBUM_EXTRACTION_MODE,
+        weiboAlbumRedirectError: "",
+        weiboAlbumSourceUrl: originalTabUrl,
+      };
+      if (debug.weibo && albumDebug) {
+        debug.weibo.album = albumDebug;
+      }
+      renderDebugInfo(debug);
+
+      const currentFolderInput = folderNameInput.value.trim();
+      if (!state.folderTouched || !currentFolderInput || currentFolderInput === previousProjectName) {
+        folderNameInput.value = state.projectName;
+        state.folderTouched = false;
+      }
+
+      setStatus(state.images.length ? `Found ${state.images.length} image(s).` : "No images found on the current page.");
+      render();
+      return;
+    }
 
     const instagramNav = await resolveInstagramNavigationContext(tab);
     let maxIndexHint = 0;
@@ -285,38 +355,57 @@ async function extractFromCurrentTab() {
       throw new Error(response?.error || "Extraction failed.");
     }
 
-    const originalTabUrl = String(tab.url || "");
     const albumDebug = response?.debug?.weibo?.album || null;
     const albumDetailUrl = getWeiboAlbumResolvedDetailUrl(albumDebug);
     let albumRedirectedToDetail = false;
     let albumRedirectError = "";
+    let albumOpenedProjectTab = false;
     if (isWeiboAlbumUrl(originalTabUrl) && albumDetailUrl && normalizeHttpUrl(albumDetailUrl) && normalizeHttpUrl(albumDetailUrl) !== normalizeHttpUrl(originalTabUrl)) {
-      try {
-        const detailTab = await chrome.tabs.create({
-          url: albumDetailUrl,
-          active: true,
-          index: typeof tab.index === "number" ? tab.index + 1 : undefined,
-        });
-        await waitForTabComplete(detailTab.id, 15000);
-        await delay(1200);
+      if (WEIBO_ALBUM_EXTRACTION_MODE === "visible") {
+        try {
+          const detailTab = await chrome.tabs.create({
+            url: albumDetailUrl,
+            active: true,
+            index: typeof tab.index === "number" ? tab.index + 1 : undefined,
+          });
+          await waitForTabComplete(detailTab.id, 15000);
+          await delay(1200);
 
-        weiboSamples = await collectWeiboRenderedSamples(detailTab);
+          weiboSamples = await collectWeiboRenderedSamples(detailTab);
 
-        const redirectedSampledUrls = [...instagramSamples.urls, ...weiboSamples.urls];
-        const redirectedSampledIndexes = [...instagramSamples.indexes, ...weiboSamples.layerIds];
-        const redirectedResponse = await requestExtraction(detailTab, maxIndexHint, redirectedSampledUrls, redirectedSampledIndexes);
-        if (!redirectedResponse?.ok) {
-          throw new Error(redirectedResponse?.error || "Extraction failed.");
+          const redirectedSampledUrls = [...instagramSamples.urls, ...weiboSamples.urls];
+          const redirectedSampledIndexes = [...instagramSamples.indexes, ...weiboSamples.layerIds];
+          const redirectedResponse = await requestExtraction(detailTab, maxIndexHint, redirectedSampledUrls, redirectedSampledIndexes);
+          if (!redirectedResponse?.ok) {
+            throw new Error(redirectedResponse?.error || "Extraction failed.");
+          }
+
+          response = redirectedResponse;
+          albumRedirectedToDetail = true;
+          albumOpenedProjectTab = true;
+          if (response.debug && albumDebug) {
+            response.debug.weibo = response.debug.weibo || {};
+            response.debug.weibo.album = albumDebug;
+          }
+        } catch (error) {
+          albumRedirectError = error instanceof Error ? error.message : String(error);
         }
+      } else {
+        try {
+          const backgroundResponse = await requestWeiboAlbumExtractionInBackground(albumDetailUrl, maxIndexHint, tab.index);
+          if (!backgroundResponse?.ok) {
+            throw new Error(backgroundResponse?.error || "Weibo album background extraction failed.");
+          }
 
-        response = redirectedResponse;
-        albumRedirectedToDetail = true;
-        if (response.debug && albumDebug) {
-          response.debug.weibo = response.debug.weibo || {};
-          response.debug.weibo.album = albumDebug;
+          response = backgroundResponse.response || backgroundResponse;
+          albumRedirectedToDetail = true;
+          if (response.debug && albumDebug) {
+            response.debug.weibo = response.debug.weibo || {};
+            response.debug.weibo.album = albumDebug;
+          }
+        } catch (error) {
+          albumRedirectError = error instanceof Error ? error.message : String(error);
         }
-      } catch (error) {
-        albumRedirectError = error instanceof Error ? error.message : String(error);
       }
     }
 
@@ -330,7 +419,7 @@ async function extractFromCurrentTab() {
     const debug = response.debug || {};
     debug.client = {
       version: "0.2.1",
-      contentBuildHash: "1148",
+      contentBuildHash: "1149",
       probeError,
       instagramSamplingError,
       weiboSamplingError,
@@ -345,7 +434,8 @@ async function extractFromCurrentTab() {
       weiboAlbumSamplingPaused: isWeiboAlbumUrl(originalTabUrl),
       weiboAlbumResolvedDetailUrl: albumDetailUrl || "",
       weiboAlbumRedirectedToDetail: albumRedirectedToDetail,
-      weiboAlbumOpenedProjectTab: albumRedirectedToDetail,
+      weiboAlbumOpenedProjectTab: albumOpenedProjectTab,
+      weiboAlbumExtractionMode: WEIBO_ALBUM_EXTRACTION_MODE,
       weiboAlbumRedirectError: albumRedirectError,
       weiboAlbumSourceUrl: originalTabUrl,
     };
@@ -391,6 +481,30 @@ async function requestExtraction(tab, maxIndexHint = 0, sampledUrls = [], sample
       throw new Error("Could not connect to the page. Reload the tab once and try again.");
     }
   }
+}
+
+async function requestWeiboAlbumProbe(tab) {
+  try {
+    const response = await chrome.tabs.sendMessage(tab.id, { type: "mediafetch:weibo-album-probe" });
+    return response?.ok ? response : null;
+  } catch {
+    await chrome.scripting.executeScript({
+      target: { tabId: tab.id },
+      files: ["content.js"],
+    });
+    const response = await chrome.tabs.sendMessage(tab.id, { type: "mediafetch:weibo-album-probe" });
+    return response?.ok ? response : null;
+  }
+}
+
+async function requestWeiboAlbumExtractionInBackground(albumDetailUrl, maxIndexHint = 0, sourceTabIndex = null) {
+  return await chrome.runtime.sendMessage({
+    type: "mediafetch:extract-weibo-album",
+    albumDetailUrl,
+    maxIndexHint,
+    sourceTabIndex,
+    extractionMode: WEIBO_ALBUM_EXTRACTION_MODE,
+  });
 }
 
 function getWeiboAlbumResolvedDetailUrl(albumDebug) {
@@ -1625,7 +1739,7 @@ async function probeLineageConnection() {
   setLineageStatus("Running Lineage probe...", false);
   const settings = await getLineageSettings();
   const probe = {
-    contentBuildHash: "1148",
+    contentBuildHash: "1149",
     featureEnabled: lineageFeatureEnabled,
     baseUrl: settings.baseUrl,
     tokenPresent: !!settings.token,

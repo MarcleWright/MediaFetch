@@ -1043,7 +1043,7 @@ When a domain rule changes, update this document with:
   - keeps Weibo card preview bound to the rendered thumbnail instead of replacing it with the final download URL
   - probes each Weibo card URL to backfill actual width and height in the plugin UI
   - keeps download behavior unchanged while fixing misleading preview-sized `resolution` values
-- refined Weibo album extraction for `contentBuildHash: 1148`
+- refined Weibo album extraction for `contentBuildHash: 1149`
   - detects album preview pages at `https://weibo.com/<uid>?tabtype=album&uid=<uid>&index=<num>`
-  - opens the resolved `https://weibo.com/<uid>/<projectID>` page in a new visible tab and runs extraction there
+  - resolves the linked `https://weibo.com/<uid>/<projectID>` page in a background tab and runs extraction there without changing the current web view
   - preserves the album probe result in final debug so the redirect path stays visible

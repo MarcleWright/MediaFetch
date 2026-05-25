@@ -23,6 +23,7 @@ const defaultLineageBaseUrl = normalizeLineageBaseUrl(features.defaultLineageBas
 const defaultLineageToken = String(features.defaultLineageToken || "").trim();
 const eagleFeatureEnabled = features.eagleIntegration !== false;
 const defaultEagleBaseUrl = normalizeEagleBaseUrl(features.defaultEagleBaseUrl || "http://localhost:41595");
+const WEIBO_ALBUM_EXTRACTION_MODE = "background";
 
 chrome.runtime.onInstalled.addListener(() => {
   setupContextMenus();
@@ -164,6 +165,21 @@ chrome.runtime.onMessage.addListener((message, _sender, sendResponse) => {
       }));
     return true;
   }
+
+  if (message?.type === "mediafetch:extract-weibo-album") {
+    extractWeiboAlbumInBackground({
+      albumDetailUrl: message.albumDetailUrl || "",
+      maxIndexHint: Number(message.maxIndexHint || 0) || 0,
+      sourceTabIndex: Number.isFinite(message.sourceTabIndex) ? Number(message.sourceTabIndex) : null,
+      extractionMode: String(message.extractionMode || WEIBO_ALBUM_EXTRACTION_MODE),
+    })
+      .then((result) => sendResponse({ ok: true, response: result }))
+      .catch((error) => sendResponse({
+        ok: false,
+        error: error instanceof Error ? error.message : String(error),
+      }));
+    return true;
+  }
 });
 
 chrome.downloads.onDeterminingFilename.addListener((downloadItem, suggest) => {
@@ -205,6 +221,48 @@ chrome.downloads.onDeterminingFilename.addListener((downloadItem, suggest) => {
 });
 
 async function downloadOriginalsFromTab(tab) {
+  const originalTabUrl = String(tab.url || "");
+  if (isWeiboAlbumUrl(originalTabUrl)) {
+    const albumProbe = await requestWeiboAlbumProbe(tab);
+    const albumDebug = albumProbe?.album || null;
+    const albumDetailUrl = getWeiboAlbumResolvedDetailUrl(albumDebug);
+    if (!albumDetailUrl) {
+      throw new Error("Could not resolve Weibo album project ID.");
+    }
+
+    const response = await extractWeiboAlbumInBackground({
+      albumDetailUrl,
+      maxIndexHint: 0,
+      albumDebug,
+      sourceTabIndex: typeof tab.index === "number" ? tab.index : null,
+      extractionMode: WEIBO_ALBUM_EXTRACTION_MODE,
+    });
+    if (response.debug && albumDebug) {
+      response.debug.weibo = response.debug.weibo || {};
+      response.debug.weibo.album = albumDebug;
+    }
+
+    const originals = (response.images || []).filter((item) => item?.isOriginal);
+    if (!originals.length) {
+      throw new Error("No Original images found.");
+    }
+
+    const folder = sanitizePathPart(response.projectName || "ProjectsA") || "ProjectsA";
+    const metadata = buildDownloadMetadata(response.metadata, {
+      folderName: folder,
+      imageCount: originals.length,
+      originalCount: originals.length,
+      pluginVersion: "0.2.1",
+    });
+    await downloadImageBatch(originals, {
+      folder,
+      metadata,
+      pageUrl: response.pageUrl || tab.url || "",
+      convertHeicToPng: await getStoredConvertHeicToPng(),
+    });
+    return;
+  }
+
   const instagramNav = await resolveInstagramNavigationContext(tab);
   const maxIndexHint = await probeInstagramMaxIndex(tab, instagramNav);
   const instagramSamples = await collectInstagramRenderedSamples(tab, instagramNav.resolvedPostPath, maxIndexHint);
@@ -216,35 +274,50 @@ async function downloadOriginalsFromTab(tab) {
     throw new Error(response?.error || "Extraction failed.");
   }
 
-  const originalTabUrl = String(tab.url || "");
   const albumDebug = response?.debug?.weibo?.album || null;
   const albumDetailUrl = getWeiboAlbumResolvedDetailUrl(albumDebug);
   if (isWeiboAlbumUrl(originalTabUrl) && albumDetailUrl && normalizeHttpUrl(albumDetailUrl) && normalizeHttpUrl(albumDetailUrl) !== normalizeHttpUrl(originalTabUrl)) {
-    try {
-      const detailTab = await chrome.tabs.create({
-        url: albumDetailUrl,
-        active: true,
-        index: typeof tab.index === "number" ? tab.index + 1 : undefined,
+    if (WEIBO_ALBUM_EXTRACTION_MODE === "visible") {
+      try {
+        const detailTab = await chrome.tabs.create({
+          url: albumDetailUrl,
+          active: true,
+          index: typeof tab.index === "number" ? tab.index + 1 : undefined,
+        });
+        await waitForTabComplete(detailTab.id, 15000);
+        await delay(1200);
+
+        weiboSamples = await collectWeiboRenderedSamples(detailTab);
+
+        const redirectedSampledUrls = [...instagramSamples.urls, ...weiboSamples.urls];
+        const redirectedSampledIndexes = [...instagramSamples.indexes, ...weiboSamples.layerIds];
+        const redirectedResponse = await requestExtraction(detailTab, maxIndexHint, redirectedSampledUrls, redirectedSampledIndexes);
+        if (!redirectedResponse?.ok) {
+          throw new Error(redirectedResponse?.error || "Extraction failed.");
+        }
+
+        response = redirectedResponse;
+        if (response.debug && albumDebug) {
+          response.debug.weibo = response.debug.weibo || {};
+          response.debug.weibo.album = albumDebug;
+        }
+      } catch {
+        // Keep the album-page response if the redirect path fails.
+      }
+    } else {
+      const redirectedResponse = await extractWeiboAlbumInBackground({
+        albumDetailUrl,
+        maxIndexHint,
+        albumDebug,
+        sourceTabIndex: typeof tab.index === "number" ? tab.index : null,
       });
-      await waitForTabComplete(detailTab.id, 15000);
-      await delay(1200);
-
-      weiboSamples = await collectWeiboRenderedSamples(detailTab);
-
-      const redirectedSampledUrls = [...instagramSamples.urls, ...weiboSamples.urls];
-      const redirectedSampledIndexes = [...instagramSamples.indexes, ...weiboSamples.layerIds];
-      const redirectedResponse = await requestExtraction(detailTab, maxIndexHint, redirectedSampledUrls, redirectedSampledIndexes);
-      if (!redirectedResponse?.ok) {
-        throw new Error(redirectedResponse?.error || "Extraction failed.");
+      if (redirectedResponse) {
+        response = redirectedResponse;
+        if (response.debug && albumDebug) {
+          response.debug.weibo = response.debug.weibo || {};
+          response.debug.weibo.album = albumDebug;
+        }
       }
-
-      response = redirectedResponse;
-      if (response.debug && albumDebug) {
-        response.debug.weibo = response.debug.weibo || {};
-        response.debug.weibo.album = albumDebug;
-      }
-    } catch {
-      // Keep the album-page response if the redirect path fails.
     }
   }
 
@@ -266,6 +339,50 @@ async function downloadOriginalsFromTab(tab) {
     pageUrl: response.pageUrl || tab.url || "",
     convertHeicToPng: await getStoredConvertHeicToPng(),
   });
+}
+
+async function extractWeiboAlbumInBackground({ albumDetailUrl, maxIndexHint = 0, albumDebug = null, sourceTabIndex = null, extractionMode = WEIBO_ALBUM_EXTRACTION_MODE }) {
+  const targetUrl = normalizeHttpUrl(albumDetailUrl || "");
+  if (!targetUrl) {
+    throw new Error("Invalid Weibo album detail URL.");
+  }
+
+  const tempTab = await chrome.tabs.create({
+    url: targetUrl,
+    active: false,
+    index: typeof sourceTabIndex === "number" ? sourceTabIndex + 1 : undefined,
+  });
+
+  try {
+    await waitForTabComplete(tempTab.id, 15000);
+    await delay(1200);
+
+    const loadedTab = await chrome.tabs.get(tempTab.id);
+    const instagramSamples = { urls: [], indexes: [] };
+    const weiboSamples = await collectWeiboRenderedSamples(loadedTab);
+    const sampledUrls = [...instagramSamples.urls, ...weiboSamples.urls];
+    const sampledIndexes = [...instagramSamples.indexes, ...weiboSamples.layerIds];
+    const response = await requestExtraction(loadedTab, maxIndexHint, sampledUrls, sampledIndexes);
+    if (!response?.ok) {
+      throw new Error(response?.error || "Extraction failed.");
+    }
+
+    if (response.debug && albumDebug) {
+      response.debug.weibo = response.debug.weibo || {};
+      response.debug.weibo.album = albumDebug;
+    }
+    response.debug = response.debug || {};
+    response.debug.client = response.debug.client || {};
+    response.debug.client.weiboAlbumExtractionMode = extractionMode;
+
+    return response;
+  } finally {
+    try {
+      await chrome.tabs.remove(tempTab.id);
+    } catch {
+      // Ignore cleanup failures for the temporary album tab.
+    }
+  }
 }
 
 async function downloadOriginalsFromLink(sourceTab, linkUrl) {
@@ -683,6 +800,20 @@ function getWeiboAlbumResolvedDetailUrl(albumDebug) {
     return parsed.toString();
   } catch {
     return "";
+  }
+}
+
+async function requestWeiboAlbumProbe(tab) {
+  try {
+    const response = await sendTabMessage(tab.id, { type: "mediafetch:weibo-album-probe" });
+    return response?.ok ? response : null;
+  } catch {
+    await chrome.scripting.executeScript({
+      target: { tabId: tab.id },
+      files: ["content.js"],
+    });
+    const response = await sendTabMessage(tab.id, { type: "mediafetch:weibo-album-probe" });
+    return response?.ok ? response : null;
   }
 }
 

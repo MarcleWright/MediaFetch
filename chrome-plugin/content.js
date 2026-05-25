@@ -1,5 +1,5 @@
 (() => {
-  const CONTENT_BUILD_HASH = "1148";
+  const CONTENT_BUILD_HASH = "1149";
   const XIAOHONGSHU_DISPLAY_NAME = "\u5c0f\u7ea2\u4e66";
   const XIAOHONGSHU_SUFFIX_PATTERN = /\s*[|\-]\s*(?:\u5c0f\u7ea2\u4e66|Xiaohongshu)\b.*$/i;
   const XIAOHONGSHU_TITLE_PATTERN = /^(.{1,80}?)\s*(?:\u7684|on)\s*(?:\u5c0f\u7ea2\u4e66|Xiaohongshu)/i;
@@ -45,6 +45,7 @@
   chrome.runtime.onMessage.addListener((message, _sender, sendResponse) => {
     if (![
       "mediafetch:extract",
+      "mediafetch:weibo-album-probe",
       "mediafetch:instagram-post-context",
       "mediafetch:instagram-rendered-snapshot",
       "mediafetch:weibo-layer-hints",
@@ -88,6 +89,14 @@
           sendResponse({
             ok: true,
             snapshot: collectWeiboRenderedSnapshot(),
+          });
+          return;
+        }
+
+        if (message?.type === "mediafetch:weibo-album-probe") {
+          sendResponse({
+            ok: true,
+            album: collectWeiboAlbumProbe(),
           });
           return;
         }
