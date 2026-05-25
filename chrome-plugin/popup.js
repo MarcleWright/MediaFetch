@@ -3,8 +3,14 @@ const state = {
   projectName: "ProjectsA",
   metadata: null,
   folderTouched: false,
+  settings: null,
+  view: "main",
 };
 
+const mainViewEl = document.getElementById("mainView");
+const settingsViewEl = document.getElementById("settingsView");
+const settingsBtn = document.getElementById("settingsBtn");
+const settingsBackBtn = document.getElementById("settingsBackBtn");
 const refreshBtn = document.getElementById("refreshBtn");
 const selectAllBtn = document.getElementById("selectAllBtn");
 const clearBtn = document.getElementById("clearBtn");
@@ -13,7 +19,11 @@ const downloadBtn = document.getElementById("downloadBtn");
 const clipboardUrlInput = document.getElementById("clipboardUrlInput");
 const clipboardUrlEl = document.getElementById("clipboardUrl");
 const clipboardDownloadBtn = document.getElementById("clipboardDownloadBtn");
-const convertHeicToPngInput = document.getElementById("convertHeicToPng");
+const clipboardBoxEl = document.getElementById("clipboardBox");
+const convertHeicToPngInput = document.getElementById("settingConvertHeicToPng");
+const settingLinkDownloadInput = document.getElementById("settingLinkDownload");
+const settingLineageInput = document.getElementById("settingLineage");
+const settingEagleInput = document.getElementById("settingEagle");
 const folderNameInput = document.getElementById("folderName");
 const selectionStatus = document.getElementById("selectionStatus");
 const statusEl = document.getElementById("status");
@@ -59,6 +69,12 @@ const eagleFeatureEnabled = features.eagleIntegration !== false;
 const defaultEagleBaseUrl = normalizeEagleBaseUrl(features.defaultEagleBaseUrl || "http://localhost:41595");
 const debugPanelEnabled = features.debugPanel !== false;
 const WEIBO_ALBUM_EXTRACTION_MODE = "background";
+const popupSettingsDefaults = {
+  showLinkDownload: true,
+  showLineage: true,
+  showEagle: true,
+  convertHeicToPng: false,
+};
 const lineageFolderTreeState = {
   folders: [],
   selectedId: "",
@@ -101,12 +117,21 @@ selectOriginalBtn.addEventListener("click", () => {
   });
   render();
 });
+settingsBtn?.addEventListener("click", () => {
+  showSettingsView();
+});
+settingsBackBtn?.addEventListener("click", () => {
+  showMainView();
+});
 downloadBtn.addEventListener("click", downloadSelected);
 clipboardDownloadBtn.addEventListener("click", downloadClipboardWeiboOriginal);
 clipboardUrlInput.addEventListener("input", () => {
   updateClipboardLinkState(clipboardUrlInput.value);
 });
 convertHeicToPngInput?.addEventListener("change", saveConvertHeicToPngSetting);
+settingLinkDownloadInput?.addEventListener("change", () => savePopupSetting("showLinkDownload", !!settingLinkDownloadInput.checked));
+settingLineageInput?.addEventListener("change", () => savePopupSetting("showLineage", !!settingLineageInput.checked));
+settingEagleInput?.addEventListener("change", () => savePopupSetting("showEagle", !!settingEagleInput.checked));
 copyDebugBtn?.addEventListener("click", copyDebugInfo);
 toggleDebugBtn?.addEventListener("click", toggleDebugSection);
 lineageFolderSelect?.addEventListener("change", saveLineageSettings);
@@ -160,10 +185,17 @@ initializePopup().catch((error) => {
 
 async function initializePopup() {
   initializeDebugPanel();
-  await initializeConvertHeicToPngSetting();
+  await initializePopupSettings();
   await initializeLineageSettings();
   await initializeEagleSettings();
+  applyPopupSettingsToUi();
+  showMainView();
   extractFromCurrentTab();
+}
+
+async function initializePopupSettings() {
+  const settings = await getStorageValues(popupSettingsDefaults);
+  state.settings = normalizePopupSettings(settings);
 }
 
 async function initializeConvertHeicToPngSetting() {
@@ -171,8 +203,7 @@ async function initializeConvertHeicToPngSetting() {
     return;
   }
 
-  const settings = await getStorageValues({ convertHeicToPng: false });
-  convertHeicToPngInput.checked = !!settings.convertHeicToPng;
+  convertHeicToPngInput.checked = !!state.settings?.convertHeicToPng;
 }
 
 async function initializeLineageSettings() {
@@ -202,6 +233,88 @@ function initializeDebugPanel() {
   }
 }
 
+function normalizePopupSettings(settings) {
+  const merged = {
+    ...popupSettingsDefaults,
+    ...(settings || {}),
+  };
+
+  return {
+    showLinkDownload: merged.showLinkDownload !== false,
+    showLineage: merged.showLineage !== false,
+    showEagle: merged.showEagle !== false,
+    convertHeicToPng: !!merged.convertHeicToPng,
+  };
+}
+
+function getPopupSettings() {
+  return normalizePopupSettings(state.settings);
+}
+
+async function savePopupSetting(key, value) {
+  const nextSettings = {
+    ...getPopupSettings(),
+    [key]: !!value,
+  };
+  state.settings = nextSettings;
+  await chrome.storage.local.set(nextSettings);
+  if (key === "showLineage" && nextSettings.showLineage) {
+    await initializeLineageSettings();
+  }
+  if (key === "showEagle" && nextSettings.showEagle) {
+    await initializeEagleSettings();
+  }
+  applyPopupSettingsToUi();
+}
+
+function applyPopupSettingsToUi() {
+  const settings = getPopupSettings();
+  if (settingLinkDownloadInput) {
+    settingLinkDownloadInput.checked = settings.showLinkDownload;
+  }
+  if (settingLineageInput) {
+    settingLineageInput.checked = settings.showLineage;
+  }
+  if (settingEagleInput) {
+    settingEagleInput.checked = settings.showEagle;
+  }
+  if (convertHeicToPngInput) {
+    convertHeicToPngInput.checked = settings.convertHeicToPng;
+  }
+
+  if (clipboardBoxEl) {
+    clipboardBoxEl.hidden = !settings.showLinkDownload;
+  }
+  if (lineageBoxEl) {
+    lineageBoxEl.hidden = !lineageFeatureEnabled || !settings.showLineage;
+  }
+  if (eagleBoxEl) {
+    eagleBoxEl.hidden = !eagleFeatureEnabled || !settings.showEagle;
+  }
+}
+
+function showMainView() {
+  state.view = "main";
+  if (mainViewEl) {
+    mainViewEl.hidden = false;
+  }
+  if (settingsViewEl) {
+    settingsViewEl.hidden = true;
+  }
+  applyPopupSettingsToUi();
+}
+
+function showSettingsView() {
+  state.view = "settings";
+  if (mainViewEl) {
+    mainViewEl.hidden = true;
+  }
+  if (settingsViewEl) {
+    settingsViewEl.hidden = false;
+  }
+  applyPopupSettingsToUi();
+}
+
 function getConvertHeicToPngSetting() {
   return !!convertHeicToPngInput?.checked;
 }
@@ -211,11 +324,7 @@ function saveConvertHeicToPngSetting() {
     return Promise.resolve();
   }
 
-  return new Promise((resolve) => {
-    chrome.storage.local.set({
-      convertHeicToPng: !!convertHeicToPngInput.checked,
-    }, resolve);
-  });
+  return savePopupSetting("convertHeicToPng", !!convertHeicToPngInput.checked);
 }
 
 function getStorageValues(defaults) {
@@ -251,7 +360,7 @@ async function extractFromCurrentTab() {
       tabId: tab.id,
       tabUrl: tab.url || "",
       version: "0.2.1",
-      contentBuildHash: "1149",
+      contentBuildHash: "1150",
     });
 
     const originalTabUrl = String(tab.url || "");
@@ -285,7 +394,7 @@ async function extractFromCurrentTab() {
       const debug = (response.response?.debug || response.debug || {});
       debug.client = {
         version: "0.2.1",
-        contentBuildHash: "1149",
+        contentBuildHash: "1150",
         probeError: "",
         instagramSamplingError: "",
         weiboSamplingError: "",
@@ -419,7 +528,7 @@ async function extractFromCurrentTab() {
     const debug = response.debug || {};
     debug.client = {
       version: "0.2.1",
-      contentBuildHash: "1149",
+      contentBuildHash: "1150",
       probeError,
       instagramSamplingError,
       weiboSamplingError,
@@ -1739,7 +1848,7 @@ async function probeLineageConnection() {
   setLineageStatus("Running Lineage probe...", false);
   const settings = await getLineageSettings();
   const probe = {
-    contentBuildHash: "1149",
+    contentBuildHash: "1150",
     featureEnabled: lineageFeatureEnabled,
     baseUrl: settings.baseUrl,
     tokenPresent: !!settings.token,

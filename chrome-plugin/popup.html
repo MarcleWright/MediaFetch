@@ -18,103 +18,136 @@
 
     <section class="toolbar">
       <div class="toolbarRow">
+        <button id="settingsBtn" type="button" class="iconButton" aria-label="Settings">
+          <svg viewBox="0 0 24 24" aria-hidden="true">
+            <path d="M10.32 4.64a1.8 1.8 0 0 1 3.36 0l.2.57c.2.56.74.93 1.33.93h.6a1.8 1.8 0 0 1 1.8 1.8v.6c0 .59.37 1.13.93 1.33l.57.2a1.8 1.8 0 0 1 0 3.36l-.57.2a1.42 1.42 0 0 0-.93 1.33v.6a1.8 1.8 0 0 1-1.8 1.8h-.6a1.42 1.42 0 0 0-1.33.93l-.2.57a1.8 1.8 0 0 1-3.36 0l-.2-.57a1.42 1.42 0 0 0-1.33-.93h-.6a1.8 1.8 0 0 1-1.8-1.8v-.6a1.42 1.42 0 0 0-.93-1.33l-.57-.2a1.8 1.8 0 0 1 0-3.36l.57-.2c.56-.2.93-.74.93-1.33v-.6a1.8 1.8 0 0 1 1.8-1.8h.6c.59 0 1.13-.37 1.33-.93l.2-.57Z"></path>
+            <circle cx="12" cy="12" r="2.75"></circle>
+          </svg>
+          <span>Settings</span>
+        </button>
         <button id="refreshBtn" type="button">Refresh</button>
         <button id="selectAllBtn" type="button" disabled>Select All</button>
         <button id="clearBtn" type="button" disabled>Clear</button>
         <button id="selectOriginalBtn" type="button" disabled>Select Original</button>
       </div>
-      <div class="toolbarRow toolbarOptions">
-        <label class="toolbarToggle">
-          <input id="convertHeicToPng" type="checkbox" />
+    </section>
+
+    <section id="settingsView" class="settingsView" hidden>
+      <div class="settingsHeader">
+        <div>
+          <h2>Settings</h2>
+          <p>Show or hide optional controls in the main view.</p>
+        </div>
+      </div>
+      <div class="settingsPanel">
+        <label class="toolbarToggle settingsToggle">
+          <input id="settingLinkDownload" type="checkbox" />
+          <span>Show Link Download</span>
+        </label>
+        <label class="toolbarToggle settingsToggle">
+          <input id="settingLineage" type="checkbox" />
+          <span>Show Save to Lineage</span>
+        </label>
+        <label class="toolbarToggle settingsToggle">
+          <input id="settingEagle" type="checkbox" />
+          <span>Show Save to Eagle</span>
+        </label>
+        <label class="toolbarToggle settingsToggle">
+          <input id="settingConvertHeicToPng" type="checkbox" />
           <span>Convert HEIC/HEIF to PNG</span>
         </label>
       </div>
-    </section>
-
-    <section id="clipboardBox" class="clipboardBox">
-      <label for="clipboardUrlInput">Link</label>
-      <div class="clipboardRow">
-        <input id="clipboardUrlInput" type="text" placeholder="Paste URL" />
-        <button id="clipboardDownloadBtn" type="button">Download</button>
+      <div class="settingsFooter">
+        <button id="settingsBackBtn" type="button" class="secondaryBtn">Back</button>
       </div>
-      <div id="clipboardUrl" class="clipboardUrl"></div>
     </section>
 
-    <section class="folderBox">
-      <label for="folderName">Folder Name</label>
-      <input id="folderName" type="text" placeholder="ProjectsA" />
-    </section>
-
-    <section id="lineageBox" class="lineageBox" hidden>
-      <div class="lineageHeader">
-        <h2>Save to Lineage</h2>
-        <div class="lineageActions">
-          <button id="lineageRefreshBtn" type="button" class="secondaryBtn">Refresh</button>
+    <div id="mainView">
+      <section id="clipboardBox" class="clipboardBox">
+        <label for="clipboardUrlInput">Link</label>
+        <div class="clipboardRow">
+          <input id="clipboardUrlInput" type="text" placeholder="Paste URL" />
+          <button id="clipboardDownloadBtn" type="button">Download</button>
         </div>
-      </div>
-      <div id="lineageFolderDropdown" class="folderDropdown">
-        <button id="lineageFolderTrigger" class="folderDropdownTrigger" type="button" aria-expanded="false">
-          <span id="lineageFolderTriggerText">Root</span>
-          <span class="folderDropdownArrow" aria-hidden="true">v</span>
-        </button>
-        <div id="lineageFolderPanel" class="folderDropdownPanel" hidden>
-          <input id="lineageFolderSearch" type="search" placeholder="Search folders" />
-          <div id="lineageFolderTree" class="folderTree" role="tree"></div>
-        </div>
-      </div>
-      <select id="lineageFolderSelect" hidden>
-        <option value="">Root</option>
-      </select>
-      <div class="lineageSaveActions">
-        <button id="lineageSaveSelectedBtn" type="button" disabled>Save Selected</button>
-        <button id="lineageSaveOriginalBtn" type="button" disabled>Save Original</button>
-      </div>
-      <div id="lineageStatus" class="lineageStatus"></div>
-    </section>
+        <div id="clipboardUrl" class="clipboardUrl"></div>
+      </section>
 
-    <section id="eagleBox" class="eagleBox" hidden>
-      <div class="lineageHeader">
-        <h2>Save to Eagle</h2>
-        <div class="lineageActions">
-          <button id="eagleRefreshBtn" type="button" class="secondaryBtn">Refresh</button>
-        </div>
-      </div>
-      <div id="eagleFolderDropdown" class="folderDropdown">
-        <button id="eagleFolderTrigger" class="folderDropdownTrigger" type="button" aria-expanded="false">
-          <span id="eagleFolderTriggerText">Root</span>
-          <span class="folderDropdownArrow" aria-hidden="true">v</span>
-        </button>
-        <div id="eagleFolderPanel" class="folderDropdownPanel" hidden>
-          <input id="eagleFolderSearch" type="search" placeholder="Search folders" />
-          <div id="eagleFolderTree" class="folderTree" role="tree"></div>
-        </div>
-      </div>
-      <select id="eagleFolderSelect" hidden>
-        <option value="">Root</option>
-      </select>
-      <div class="lineageSaveActions">
-        <button id="eagleSaveSelectedBtn" type="button" disabled>Save Selected</button>
-        <button id="eagleSaveOriginalBtn" type="button" disabled>Save Original</button>
-      </div>
-      <div id="eagleStatus" class="lineageStatus"></div>
-    </section>
+      <section class="folderBox">
+        <label for="folderName">Folder Name</label>
+        <input id="folderName" type="text" placeholder="ProjectsA" />
+      </section>
 
-    <section class="summary">
-      <span id="selectionStatus">Selected: 0 / 0</span>
-      <button id="downloadBtn" type="button" disabled>Download</button>
-    </section>
-
-    <section id="status" class="status">Open a page and click Refresh.</section>
-    <section id="debugBox" class="debugBox collapsed">
-      <div class="debugHeader">
-        <button id="toggleDebugBtn" type="button" class="debugToggle" aria-expanded="false">Debug</button>
-        <div class="debugActions">
-          <button id="copyDebugBtn" type="button" class="secondaryBtn">Copy</button>
+      <section id="lineageBox" class="lineageBox" hidden>
+        <div class="lineageHeader">
+          <h2>Save to Lineage</h2>
+          <div class="lineageActions">
+            <button id="lineageRefreshBtn" type="button" class="secondaryBtn">Refresh</button>
+          </div>
         </div>
-      </div>
-      <pre id="debugInfo" class="debugInfo">No debug data yet.</pre>
-    </section>
-    <section id="results" class="grid"></section>
+        <div id="lineageFolderDropdown" class="folderDropdown">
+          <button id="lineageFolderTrigger" class="folderDropdownTrigger" type="button" aria-expanded="false">
+            <span id="lineageFolderTriggerText">Root</span>
+            <span class="folderDropdownArrow" aria-hidden="true">v</span>
+          </button>
+          <div id="lineageFolderPanel" class="folderDropdownPanel" hidden>
+            <input id="lineageFolderSearch" type="search" placeholder="Search folders" />
+            <div id="lineageFolderTree" class="folderTree" role="tree"></div>
+          </div>
+        </div>
+        <select id="lineageFolderSelect" hidden>
+          <option value="">Root</option>
+        </select>
+        <div class="lineageSaveActions">
+          <button id="lineageSaveSelectedBtn" type="button" disabled>Save Selected</button>
+          <button id="lineageSaveOriginalBtn" type="button" disabled>Save Original</button>
+        </div>
+        <div id="lineageStatus" class="lineageStatus"></div>
+      </section>
+
+      <section id="eagleBox" class="eagleBox" hidden>
+        <div class="lineageHeader">
+          <h2>Save to Eagle</h2>
+          <div class="lineageActions">
+            <button id="eagleRefreshBtn" type="button" class="secondaryBtn">Refresh</button>
+          </div>
+        </div>
+        <div id="eagleFolderDropdown" class="folderDropdown">
+          <button id="eagleFolderTrigger" class="folderDropdownTrigger" type="button" aria-expanded="false">
+            <span id="eagleFolderTriggerText">Root</span>
+            <span class="folderDropdownArrow" aria-hidden="true">v</span>
+          </button>
+          <div id="eagleFolderPanel" class="folderDropdownPanel" hidden>
+            <input id="eagleFolderSearch" type="search" placeholder="Search folders" />
+            <div id="eagleFolderTree" class="folderTree" role="tree"></div>
+          </div>
+        </div>
+        <select id="eagleFolderSelect" hidden>
+          <option value="">Root</option>
+        </select>
+        <div class="lineageSaveActions">
+          <button id="eagleSaveSelectedBtn" type="button" disabled>Save Selected</button>
+          <button id="eagleSaveOriginalBtn" type="button" disabled>Save Original</button>
+        </div>
+        <div id="eagleStatus" class="lineageStatus"></div>
+      </section>
+
+      <section class="summary">
+        <span id="selectionStatus">Selected: 0 / 0</span>
+        <button id="downloadBtn" type="button" disabled>Download</button>
+      </section>
+
+      <section id="status" class="status">Open a page and click Refresh.</section>
+      <section id="debugBox" class="debugBox collapsed">
+        <div class="debugHeader">
+          <button id="toggleDebugBtn" type="button" class="debugToggle" aria-expanded="false">Debug</button>
+          <div class="debugActions">
+            <button id="copyDebugBtn" type="button" class="secondaryBtn">Copy</button>
+          </div>
+        </div>
+        <pre id="debugInfo" class="debugInfo">No debug data yet.</pre>
+      </section>
+      <section id="results" class="grid"></section>
+    </div>
   </main>
   <script src="features.js"></script>
   <script src="popup.js"></script>

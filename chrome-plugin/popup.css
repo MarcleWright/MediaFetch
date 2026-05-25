@@ -76,6 +76,55 @@ body {
   justify-content: flex-start;
 }
 
+.settingsView {
+  margin-top: 12px;
+  padding: 12px;
+  border: 1px solid var(--line);
+  border-radius: 12px;
+  background: var(--panel);
+}
+
+.settingsHeader {
+  display: flex;
+  align-items: flex-start;
+  justify-content: space-between;
+  gap: 12px;
+}
+
+.settingsHeader h2 {
+  margin: 0;
+  font-size: 16px;
+  line-height: 1.2;
+}
+
+.settingsHeader p {
+  margin: 4px 0 0;
+  color: var(--muted);
+  font-size: 12px;
+  line-height: 1.45;
+}
+
+.settingsPanel {
+  display: grid;
+  gap: 8px;
+  margin-top: 12px;
+}
+
+.settingsToggle {
+  width: 100%;
+  justify-content: flex-start;
+}
+
+.settingsToggle span {
+  flex: 1 1 auto;
+}
+
+.settingsFooter {
+  display: flex;
+  justify-content: flex-end;
+  margin-top: 12px;
+}
+
 .toolbarToggle {
   display: inline-flex;
   align-items: center;
@@ -100,6 +149,10 @@ input {
 }
 
 button {
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  gap: 6px;
   min-height: 32px;
   padding: 0 12px;
   border: 0;
@@ -107,6 +160,19 @@ button {
   background: var(--accent);
   color: #fff;
   cursor: pointer;
+}
+
+button svg {
+  width: 14px;
+  height: 14px;
+  fill: currentColor;
+  stroke: currentColor;
+  stroke-width: 0;
+  flex: 0 0 auto;
+}
+
+.iconButton {
+  padding: 0 10px;
 }
 
 button:disabled {
