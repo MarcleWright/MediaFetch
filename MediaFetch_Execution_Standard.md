@@ -1039,3 +1039,7 @@ When a domain rule changes, update this document with:
   - injects domain original URLs only after all rendered and bridge candidates are complete, so bridge-accepted URLs appear in final results
   - validates derived source-size URLs before marking them as `Original`
   - exposes dedicated `debug.weixin.original` probe details for diagnosis
+- refined Weibo preview and resolution display for `contentBuildHash: 1145`
+  - keeps Weibo card preview bound to the rendered thumbnail instead of replacing it with the final download URL
+  - probes each Weibo card URL to backfill actual width and height in the plugin UI
+  - keeps download behavior unchanged while fixing misleading preview-sized `resolution` values

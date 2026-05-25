@@ -1,5 +1,5 @@
 (() => {
-  const CONTENT_BUILD_HASH = "1143";
+  const CONTENT_BUILD_HASH = "1145";
   const XIAOHONGSHU_DISPLAY_NAME = "\u5c0f\u7ea2\u4e66";
   const XIAOHONGSHU_SUFFIX_PATTERN = /\s*[|\-]\s*(?:\u5c0f\u7ea2\u4e66|Xiaohongshu)\b.*$/i;
   const XIAOHONGSHU_TITLE_PATTERN = /^(.{1,80}?)\s*(?:\u7684|on)\s*(?:\u5c0f\u7ea2\u4e66|Xiaohongshu)/i;
@@ -160,6 +160,7 @@
       const height = Number(options.height || 0);
       const area = width * height;
       const sourceHint = options.sourceHint || "rendered";
+      const normalizedThumbnail = normalizeUrl(options.thumbnail || "");
       const score = computeScore(url, sourceHint, width, height);
       if (instagramMediaKey) {
         const existing = seenInstagramMediaItems.get(instagramMediaKey);
@@ -207,7 +208,7 @@
 
       const item = {
         url,
-        thumbnail: options.thumbnail || url,
+        thumbnail: normalizedThumbnail || options.thumbnail || url,
         format: options.format || inferFormat(url),
         resolution: width && height ? `${width} x ${height}` : "Unknown",
         size: "Unknown",
@@ -221,6 +222,12 @@
         const existing = seenBehanceMediaItems.get(behanceMediaKey);
         if (existing) {
           hydrateKnownMediaMetadata(item, existing);
+        }
+      }
+      if (weiboMediaKey) {
+        const existing = seenWeiboMediaItems.get(weiboMediaKey);
+        if (existing?.thumbnail && !normalizedThumbnail) {
+          item.thumbnail = existing.thumbnail;
         }
       }
       items.push(item);
@@ -237,7 +244,9 @@
     };
 
     document.querySelectorAll("img").forEach((img) => {
+      const renderedThumbnail = normalizeUrl(img.currentSrc || img.src || "");
       push(img.currentSrc || img.src, {
+        thumbnail: renderedThumbnail,
         width: img.naturalWidth || img.width || 0,
         height: img.naturalHeight || img.height || 0,
         sourceHint: img.currentSrc ? "rendered-current" : "rendered-direct",
@@ -247,6 +256,7 @@
       if (bestSrcset) {
         const srcsetSize = getSrcsetCandidateSize(bestSrcset, img);
         push(bestSrcset, {
+          thumbnail: renderedThumbnail,
           width: srcsetSize.width || img.naturalWidth || img.width || 0,
           height: srcsetSize.height || img.naturalHeight || img.height || 0,
           sourceHint: "rendered-srcset",
@@ -255,6 +265,7 @@
 
       getImageAttributeUrls(img).forEach((url) => {
         push(url, {
+          thumbnail: renderedThumbnail,
           width: img.naturalWidth || img.width || 0,
           height: img.naturalHeight || img.height || 0,
           sourceHint: "rendered-data",
@@ -270,6 +281,7 @@
 
     await augmentWeixinOriginalsFromExtractedItems(platformMedia, items);
     pushDomainOriginalUrls(platformMedia, push);
+    await hydrateWeiboItemMetadata(items);
 
     const sorted = items
       .sort((a, b) => {
@@ -367,6 +379,30 @@
                 : "instagram-sampled",
       });
     });
+  }
+
+  async function hydrateWeiboItemMetadata(items) {
+    if (!/weibo\.com$/i.test(location.hostname) || !Array.isArray(items) || !items.length) {
+      return;
+    }
+
+    const concurrency = 4;
+    for (let index = 0; index < items.length; index += concurrency) {
+      const batch = items.slice(index, index + concurrency);
+      await Promise.all(batch.map(async (item) => {
+        const probe = await probeImageResource(item.url, 2500);
+        const width = Number(probe.width || probe.responseWidth || 0);
+        const height = Number(probe.height || probe.responseHeight || 0);
+        if (width > 0 && height > 0) {
+          item.width = width;
+          item.height = height;
+          item.area = width * height;
+          item.resolution = `${width} x ${height}`;
+        }
+        item.format = inferFormatFromUrlOrProbe(item.url, probe) || item.format;
+        item.score = computeScore(item.url, item.sourceHint, item.width || 0, item.height || 0);
+      }));
+    }
   }
 
   function inferProjectName() {
