@@ -360,10 +360,61 @@ async function extractFromCurrentTab() {
       tabId: tab.id,
       tabUrl: tab.url || "",
       version: "0.2.1",
-      contentBuildHash: "1150",
+      contentBuildHash: "1151",
     });
 
     const originalTabUrl = String(tab.url || "");
+    if (/^https:\/\/www\.instagram\.com\//i.test(originalTabUrl)) {
+      const response = await requestInstagramExtractionInBackground(tab);
+      if (!response?.ok) {
+        throw new Error(response?.error || "Instagram background extraction failed.");
+      }
+
+      const extracted = response.response || response;
+      state.images = (extracted.images || []).map((item) => ({
+        ...item,
+        selected: false,
+      }));
+      const previousProjectName = state.projectName || "";
+      state.projectName = extracted.projectName || "ProjectsA";
+      state.metadata = extracted.metadata || null;
+      const debug = extracted.debug || {};
+      const responseClient = debug.client || {};
+      debug.client = {
+        ...responseClient,
+        version: "0.2.1",
+        contentBuildHash: "1151",
+        probeError: responseClient.probeError || "",
+        instagramSamplingError: responseClient.instagramSamplingError || "",
+        weiboSamplingError: responseClient.weiboSamplingError || "",
+        instagramResolvedPostPath: responseClient.instagramResolvedPostPath || "",
+        instagramInitialCarouselCount: responseClient.instagramInitialCarouselCount || 0,
+        instagramContextSource: responseClient.instagramContextSource || "",
+        maxIndexHint: responseClient.maxIndexHint || 0,
+        instagramProbeMaxIndex: responseClient.instagramProbeMaxIndex || 0,
+        instagramSampleMaxIndex: responseClient.instagramSampleMaxIndex || responseClient.maxIndexHint || 0,
+        instagramSampleIndexes: responseClient.instagramSampleIndexes || [],
+        instagramSampledUrlCount: responseClient.instagramSampledUrlCount || 0,
+        weiboSampleLayerIds: responseClient.weiboSampleLayerIds || [],
+        weiboSampledUrlCount: responseClient.weiboSampledUrlCount || 0,
+        instagramBackgroundExtraction: true,
+        instagramBackgroundTabOpened: !!responseClient.instagramBackgroundTabOpened,
+        instagramExtractionMode: responseClient.instagramExtractionMode || "background",
+        instagramSourceUrl: originalTabUrl,
+      };
+      renderDebugInfo(debug);
+
+      const currentFolderInput = folderNameInput.value.trim();
+      if (!state.folderTouched || !currentFolderInput || currentFolderInput === previousProjectName) {
+        folderNameInput.value = state.projectName;
+        state.folderTouched = false;
+      }
+
+      setStatus(state.images.length ? `Found ${state.images.length} image(s).` : "No images found on the current page.");
+      render();
+      return;
+    }
+
     if (isWeiboAlbumUrl(originalTabUrl)) {
       let albumProbe = null;
       let albumProbeError = "";
@@ -394,7 +445,7 @@ async function extractFromCurrentTab() {
       const debug = (response.response?.debug || response.debug || {});
       debug.client = {
         version: "0.2.1",
-        contentBuildHash: "1150",
+        contentBuildHash: "1151",
         probeError: "",
         instagramSamplingError: "",
         weiboSamplingError: "",
@@ -528,7 +579,7 @@ async function extractFromCurrentTab() {
     const debug = response.debug || {};
     debug.client = {
       version: "0.2.1",
-      contentBuildHash: "1150",
+      contentBuildHash: "1151",
       probeError,
       instagramSamplingError,
       weiboSamplingError,
@@ -613,6 +664,15 @@ async function requestWeiboAlbumExtractionInBackground(albumDetailUrl, maxIndexH
     maxIndexHint,
     sourceTabIndex,
     extractionMode: WEIBO_ALBUM_EXTRACTION_MODE,
+  });
+}
+
+async function requestInstagramExtractionInBackground(tab) {
+  return await chrome.runtime.sendMessage({
+    type: "mediafetch:extract-instagram",
+    sourceUrl: tab?.url || "",
+    sourceTabIndex: Number.isFinite(tab?.index) ? tab.index : null,
+    extractionMode: "background",
   });
 }
 
@@ -1848,7 +1908,7 @@ async function probeLineageConnection() {
   setLineageStatus("Running Lineage probe...", false);
   const settings = await getLineageSettings();
   const probe = {
-    contentBuildHash: "1150",
+    contentBuildHash: "1151",
     featureEnabled: lineageFeatureEnabled,
     baseUrl: settings.baseUrl,
     tokenPresent: !!settings.token,

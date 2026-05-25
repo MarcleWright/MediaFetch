@@ -180,6 +180,20 @@ chrome.runtime.onMessage.addListener((message, _sender, sendResponse) => {
       }));
     return true;
   }
+
+  if (message?.type === "mediafetch:extract-instagram") {
+    extractInstagramInBackground({
+      sourceUrl: message.sourceUrl || "",
+      sourceTabIndex: Number.isFinite(message.sourceTabIndex) ? Number(message.sourceTabIndex) : null,
+      extractionMode: String(message.extractionMode || "background"),
+    })
+      .then((result) => sendResponse({ ok: true, response: result }))
+      .catch((error) => sendResponse({
+        ok: false,
+        error: error instanceof Error ? error.message : String(error),
+      }));
+    return true;
+  }
 });
 
 chrome.downloads.onDeterminingFilename.addListener((downloadItem, suggest) => {
@@ -222,6 +236,33 @@ chrome.downloads.onDeterminingFilename.addListener((downloadItem, suggest) => {
 
 async function downloadOriginalsFromTab(tab) {
   const originalTabUrl = String(tab.url || "");
+  if (/^https:\/\/www\.instagram\.com\//i.test(originalTabUrl)) {
+    const response = await extractInstagramInBackground({
+      sourceUrl: originalTabUrl,
+      sourceTabIndex: typeof tab.index === "number" ? tab.index : null,
+    });
+
+    const originals = (response.images || []).filter((item) => item?.isOriginal);
+    if (!originals.length) {
+      throw new Error("No Original images found.");
+    }
+
+    const folder = sanitizePathPart(response.projectName || "ProjectsA") || "ProjectsA";
+    const metadata = buildDownloadMetadata(response.metadata, {
+      folderName: folder,
+      imageCount: originals.length,
+      originalCount: originals.length,
+      pluginVersion: "0.2.1",
+    });
+    await downloadImageBatch(originals, {
+      folder,
+      metadata,
+      pageUrl: response.pageUrl || tab.url || "",
+      convertHeicToPng: await getStoredConvertHeicToPng(),
+    });
+    return;
+  }
+
   if (isWeiboAlbumUrl(originalTabUrl)) {
     const albumProbe = await requestWeiboAlbumProbe(tab);
     const albumDebug = albumProbe?.album || null;
@@ -383,6 +424,101 @@ async function extractWeiboAlbumInBackground({ albumDetailUrl, maxIndexHint = 0,
       // Ignore cleanup failures for the temporary album tab.
     }
   }
+}
+
+async function extractInstagramInBackground({ sourceUrl, sourceTabIndex = null, extractionMode = "background" }) {
+  const targetUrl = normalizeHttpUrl(sourceUrl || "");
+  if (!targetUrl) {
+    throw new Error("Invalid Instagram URL.");
+  }
+
+  const tempTab = await chrome.tabs.create({
+    url: targetUrl,
+    active: false,
+    index: typeof sourceTabIndex === "number" ? sourceTabIndex + 1 : undefined,
+  });
+
+  try {
+    await waitForTabComplete(tempTab.id, 20000);
+    await delay(1200);
+
+    const loadedTab = await chrome.tabs.get(tempTab.id);
+    const instagramNav = await resolveInstagramNavigationContext(loadedTab);
+
+    let maxIndexHint = 0;
+    let probeError = "";
+    try {
+      maxIndexHint = await probeInstagramMaxIndex(loadedTab, instagramNav);
+    } catch (error) {
+      probeError = error instanceof Error ? error.message : String(error);
+    }
+
+    const sampleMaxIndex = resolveInstagramSampleMaxIndex(maxIndexHint, instagramNav.initialCarouselCount);
+    let instagramSamples = { urls: [], indexes: [] };
+    let instagramSamplingError = "";
+    try {
+      instagramSamples = await collectInstagramRenderedSamples(loadedTab, instagramNav.resolvedPostPath, sampleMaxIndex);
+    } catch (error) {
+      instagramSamplingError = error instanceof Error ? error.message : String(error);
+    }
+
+    let weiboSamples = { urls: [], layerIds: [] };
+    let weiboSamplingError = "";
+    try {
+      weiboSamples = await collectWeiboRenderedSamples(loadedTab);
+    } catch (error) {
+      weiboSamplingError = error instanceof Error ? error.message : String(error);
+    }
+
+    const sampledUrls = [...instagramSamples.urls, ...weiboSamples.urls];
+    const sampledIndexes = [...instagramSamples.indexes, ...weiboSamples.layerIds];
+    const response = await requestExtraction(loadedTab, sampleMaxIndex, sampledUrls, sampledIndexes);
+    if (!response?.ok) {
+      throw new Error(response?.error || "Extraction failed.");
+    }
+
+    response.debug = response.debug || {};
+    response.debug.client = {
+      ...(response.debug.client || {}),
+      version: "0.2.1",
+      contentBuildHash: "1151",
+      probeError,
+      instagramSamplingError,
+      weiboSamplingError,
+      instagramResolvedPostPath: instagramNav.resolvedPostPath || "",
+      instagramInitialCarouselCount: instagramNav.initialCarouselCount || 0,
+      instagramContextSource: instagramNav.source || "",
+      maxIndexHint: sampleMaxIndex,
+      instagramProbeMaxIndex: maxIndexHint,
+      instagramSampleMaxIndex: sampleMaxIndex,
+      instagramSampleIndexes: instagramSamples.indexes || [],
+      instagramSampledUrlCount: instagramSamples.urls?.length || 0,
+      weiboSampleLayerIds: weiboSamples.layerIds || [],
+      weiboSampledUrlCount: weiboSamples.urls?.length || 0,
+      instagramBackgroundExtraction: true,
+      instagramBackgroundTabOpened: true,
+      instagramExtractionMode: extractionMode,
+      instagramSourceUrl: targetUrl,
+    };
+
+    return response;
+  } finally {
+    try {
+      await chrome.tabs.remove(tempTab.id);
+    } catch {
+      // Ignore cleanup failures for the temporary Instagram tab.
+    }
+  }
+}
+
+function resolveInstagramSampleMaxIndex(maxIndexHint, initialCarouselCount = 0) {
+  const hinted = Number(maxIndexHint || 0);
+  const initial = Number(initialCarouselCount || 0);
+  if (initial > 0) {
+    return hinted > 0 ? Math.min(hinted, initial) : initial;
+  }
+
+  return hinted > 0 ? hinted : 0;
 }
 
 async function downloadOriginalsFromLink(sourceTab, linkUrl) {

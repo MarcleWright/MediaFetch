@@ -1,5 +1,5 @@
 (() => {
-const CONTENT_BUILD_HASH = "1150";
+const CONTENT_BUILD_HASH = "1151";
   const XIAOHONGSHU_DISPLAY_NAME = "\u5c0f\u7ea2\u4e66";
   const XIAOHONGSHU_SUFFIX_PATTERN = /\s*[|\-]\s*(?:\u5c0f\u7ea2\u4e66|Xiaohongshu)\b.*$/i;
   const XIAOHONGSHU_TITLE_PATTERN = /^(.{1,80}?)\s*(?:\u7684|on)\s*(?:\u5c0f\u7ea2\u4e66|Xiaohongshu)/i;
@@ -2479,7 +2479,11 @@ const CONTENT_BUILD_HASH = "1150";
       }
     }
 
-    return Math.max(maxIndex, maxIndexHint > 0 ? maxIndexHint : 0);
+    if (maxIndex > 0) {
+      return maxIndex;
+    }
+
+    return maxIndexHint > 0 ? maxIndexHint : 0;
   }
 
   function extractCurrentImgIndex() {
