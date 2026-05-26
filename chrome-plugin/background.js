@@ -448,7 +448,7 @@ async function extractInstagramInBackground({ sourceUrl, sourceTabIndex = null, 
     let maxIndexHint = 0;
     let probeError = "";
     try {
-      maxIndexHint = await probeInstagramMaxIndex(loadedTab, instagramNav);
+      maxIndexHint = await probeInstagramMaxIndex(loadedTab, instagramNav, false);
     } catch (error) {
       probeError = error instanceof Error ? error.message : String(error);
     }
@@ -457,7 +457,7 @@ async function extractInstagramInBackground({ sourceUrl, sourceTabIndex = null, 
     let instagramSamples = { urls: [], indexes: [] };
     let instagramSamplingError = "";
     try {
-      instagramSamples = await collectInstagramRenderedSamples(loadedTab, instagramNav.resolvedPostPath, sampleMaxIndex);
+      instagramSamples = await collectInstagramRenderedSamples(loadedTab, instagramNav.resolvedPostPath, sampleMaxIndex, false);
     } catch (error) {
       instagramSamplingError = error instanceof Error ? error.message : String(error);
     }
@@ -953,7 +953,7 @@ async function requestWeiboAlbumProbe(tab) {
   }
 }
 
-async function collectInstagramRenderedSamples(tab, resolvedPostPath = "", maxIndexHint = 0) {
+async function collectInstagramRenderedSamples(tab, resolvedPostPath = "", maxIndexHint = 0, restoreTab = true) {
   const url = String(tab?.url || "");
   if (!maxIndexHint || !/https:\/\/www\.instagram\.com\//i.test(url)) {
     return { urls: [], indexes: [] };
@@ -964,7 +964,7 @@ async function collectInstagramRenderedSamples(tab, resolvedPostPath = "", maxIn
   }
 
   const originalUrl = url;
-  const restoreUrl = buildInstagramStableReturnUrl(originalUrl, resolvedPostPath);
+  const restoreUrl = restoreTab ? buildInstagramStableReturnUrl(originalUrl, resolvedPostPath) : "";
   const indexes = buildInstagramProbeIndexes(maxIndexHint);
   const urls = new Set();
 
@@ -985,12 +985,14 @@ async function collectInstagramRenderedSamples(tab, resolvedPostPath = "", maxIn
       });
     }
   } finally {
-    try {
-      await chrome.tabs.update(tab.id, { url: restoreUrl });
-      await waitForTabComplete(tab.id, 15000);
-      await delay(800);
-    } catch {
-      // Final extraction will surface connection issues if restore failed.
+    if (restoreUrl) {
+      try {
+        await chrome.tabs.update(tab.id, { url: restoreUrl });
+        await waitForTabComplete(tab.id, 15000);
+        await delay(800);
+      } catch {
+        // Final extraction will surface connection issues if restore failed.
+      }
     }
   }
 
@@ -1104,7 +1106,7 @@ async function requestWeiboRenderedSnapshot(tabId) {
   }
 }
 
-async function probeInstagramMaxIndex(tab, instagramNav = null) {
+async function probeInstagramMaxIndex(tab, instagramNav = null, restoreTab = true) {
   const url = String(tab?.url || "");
   if (!/https:\/\/www\.instagram\.com\//i.test(url)) {
     return 0;
@@ -1122,7 +1124,7 @@ async function probeInstagramMaxIndex(tab, instagramNav = null) {
 
   const tabId = tab?.id || 0;
   const originalUrl = String(tab.url || "");
-  const restoreUrl = buildInstagramStableReturnUrl(originalUrl, nav.resolvedPostPath);
+  const restoreUrl = restoreTab ? buildInstagramStableReturnUrl(originalUrl, nav.resolvedPostPath) : "";
   let navigated = false;
   try {
     if (!tabId) {
