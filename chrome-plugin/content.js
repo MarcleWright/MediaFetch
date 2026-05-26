@@ -2034,7 +2034,7 @@ const CONTENT_BUILD_HASH = "1151";
     if (/(original|orig|full|master|raw|source|highres|hires|largest|large|xl|xxl|4096|2048)/.test(lowered)) {
       score += 120;
     }
-    if (/\/project_modules\/max_3840\//i.test(lowered)) {
+    if (/\/project_modules\/max_3840(?:_[^/]+)?\//i.test(lowered)) {
       score += 220;
     }
     if (/\/\/[^/]+\.sinaimg\.cn\/(?:mw2000|large|mw1024|oslarge)\//i.test(lowered)) {
@@ -5065,16 +5065,24 @@ const CONTENT_BUILD_HASH = "1151";
       return urls;
     }
 
+    const behanceHighResBucketPattern = "(?:source|max_3840|max_2560|max_1920|3840|2560|1920)(?:_[a-z0-9]+)*";
+
     const patterns = [
-      /https?:\\?\/\\?\/[^"'\\\s]+behance\.net\\?\/[^"'\s]*?\\?\/project_modules\\?\/(?:source|max_3840|max_2560|max_1920|3840|2560|1920)\\?\/[^"'\s<>)]+/gi,
-      /https?:\/\/[^"'\s]+behance\.net\/[^"'\s]*?\/project_modules\/(?:source|max_3840|max_2560|max_1920|3840|2560|1920)\/[^"'\s<>)]+/gi,
+      new RegExp(
+        `https?:\\\\?\\/\\\\?\\/[^"'\\\\\\s]+behance\\.net\\\\?\\/(?:[^"'\\s]*?\\\\?\\/)?project_modules\\\\?\\/${behanceHighResBucketPattern}\\\\?\\/[^"'\\s<>)]+`,
+        "gi"
+      ),
+      new RegExp(
+        `https?:\\/\\/[^"'\\s]+behance\\.net\\/(?:[^"'\\s]*?\\/)?project_modules\\/${behanceHighResBucketPattern}\\/[^"'\\s<>)]+`,
+        "gi"
+      ),
     ];
 
     patterns.forEach((pattern) => {
       let match;
       while ((match = pattern.exec(html)) !== null) {
         const decoded = decodeEscapedUrl(match[0]);
-        if (decoded && /\/project_modules\/(?:source|max_3840|max_2560|max_1920|3840|2560|1920)\//i.test(decoded)) {
+        if (decoded && new RegExp(`/project_modules/${behanceHighResBucketPattern}/`, "i").test(decoded)) {
           urls.add(decoded);
         }
       }
