@@ -859,6 +859,7 @@ async function requestWeiboRenderedSnapshot(tab) {
 }
 
 async function probeInstagramMaxIndex(tab, instagramNav = null) {
+  const INSTAGRAM_MAX_PROBE_INDEX = 21;
   const url = String(tab?.url || "");
   if (!/https:\/\/www\.instagram\.com\//i.test(url)) {
     return 0;
@@ -886,10 +887,25 @@ async function probeInstagramMaxIndex(tab, instagramNav = null) {
     await chrome.tabs.update(tabId, { url: normalized });
     navigated = true;
     await waitForTabComplete(tabId, 15000);
-    const finalUrl = await waitForInstagramProbeUrl(tabId, 20, 10000);
+    await delay(1200);
+    const finalUrl = await waitForInstagramProbeUrl(tabId, INSTAGRAM_MAX_PROBE_INDEX, 10000);
     const finalParsed = new URL(finalUrl);
     const value = Number.parseInt(finalParsed.searchParams.get("img_index") || "", 10);
-    return Number.isFinite(value) && value > 0 ? value : 0;
+    if (Number.isFinite(value) && value > 0 && value < INSTAGRAM_MAX_PROBE_INDEX) {
+      return value;
+    }
+
+    const snapshot = await requestInstagramRenderedSnapshot(tab);
+    if (!snapshot?.containerFound) {
+      return 1;
+    }
+
+    const currentIndex = Number(snapshot?.currentImgIndex || 0);
+    if (Number.isFinite(currentIndex) && currentIndex > 0 && currentIndex < INSTAGRAM_MAX_PROBE_INDEX) {
+      return currentIndex;
+    }
+
+    return 0;
   } catch {
     return 0;
   } finally {
@@ -927,6 +943,7 @@ async function waitForInstagramProbeUrl(tabId, requestedIndex, timeoutMs) {
 }
 
 async function normalizeInstagramProbeUrl(tab, resolvedPostPath = "") {
+  const INSTAGRAM_MAX_PROBE_INDEX = 21;
   try {
     const rawUrl = String(tab?.url || "");
     const parsed = new URL(rawUrl);
@@ -939,7 +956,7 @@ async function normalizeInstagramProbeUrl(tab, resolvedPostPath = "") {
     }
     parsed.pathname = postPath;
     parsed.search = "";
-    parsed.searchParams.set("img_index", "20");
+    parsed.searchParams.set("img_index", String(INSTAGRAM_MAX_PROBE_INDEX));
     return parsed.toString();
   } catch {
     throw new Error("Instagram max index probe failed: missing username in post URL.");

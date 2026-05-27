@@ -68,7 +68,20 @@ const CONTENT_BUILD_HASH = "1151";
           const context = collectInstagramPostContext();
           if (context) {
             const container = findInstagramPostContainer();
-            context.initialCarouselCount = container ? await extractInstagramCarouselCount(container, 0) : 0;
+            const carouselEvidence = container
+              ? await getInstagramCarouselEvidence(container, 0)
+              : {
+                  count: 0,
+                  source: "none",
+                  hrefMax: 0,
+                  htmlEvidenceMax: 0,
+                  visibleCount: 0,
+                  liveDistinctCount: 0,
+                  usedHint: false,
+                  hintValue: 0,
+                };
+            context.initialCarouselCount = carouselEvidence.count;
+            context.initialCarouselEvidence = carouselEvidence;
           }
           sendResponse({
             ok: true,
@@ -2296,13 +2309,15 @@ const CONTENT_BUILD_HASH = "1151";
     const narrowed = firstCluster.filter((candidate) => allowedLinkTypes.has(candidate.linkType));
     const clusterCandidates = narrowed.length ? narrowed : firstCluster.slice(0, 10);
     const clusterUrls = createUrlSetFromCandidates(clusterCandidates);
-    const carouselCount = await extractInstagramCarouselCount(article, maxIndexHint);
+    const carouselEvidence = await getInstagramCarouselEvidence(article, maxIndexHint);
+    const carouselCount = carouselEvidence.count;
     media.debug.sampling = {
       sampleIndexes: [],
       sampledUrlCount: 0,
       sampledUrlPreview: [],
       usedSampledUrls: false,
       carouselCount,
+      carouselEvidence,
       sampledMediaKeyCount: 0,
     };
 
@@ -2318,6 +2333,7 @@ const CONTENT_BUILD_HASH = "1151";
       sampledUrlPreview: sampledUrls ? Array.from(sampledUrls).slice(0, 6) : [],
       usedSampledUrls: !!sampledUrls?.size,
       carouselCount,
+      carouselEvidence,
     };
 
     media.originalUrls = clusterUrls.size ? clusterUrls : null;
@@ -2400,13 +2416,22 @@ const CONTENT_BUILD_HASH = "1151";
     return Math.max(0, Math.round(element.getBoundingClientRect().top + window.scrollY));
   }
 
-  async function extractInstagramCarouselCount(root, maxIndexHint = 0) {
+  async function getInstagramCarouselEvidence(root, maxIndexHint = 0) {
     const postCode = extractInstagramPostCode(location.pathname);
     if (!postCode) {
-      return 0;
+      return {
+        count: 0,
+        source: "missing-post-code",
+        hrefMax: 0,
+        htmlEvidenceMax: 0,
+        visibleCount: 0,
+        liveDistinctCount: 0,
+        usedHint: false,
+        hintValue: Number(maxIndexHint || 0) || 0,
+      };
     }
 
-    let maxIndex = 0;
+    let hrefMax = 0;
     const hrefs = [
       ...Array.from(root.querySelectorAll('a[href*="img_index="]')).map((node) => node.getAttribute("href") || ""),
       ...Array.from(document.querySelectorAll('a[href*="img_index="]')).map((node) => node.getAttribute("href") || ""),
@@ -2421,7 +2446,7 @@ const CONTENT_BUILD_HASH = "1151";
 
         const value = Number.parseInt(parsed.searchParams.get("img_index") || "", 10);
         if (Number.isFinite(value) && value > 0) {
-          maxIndex = Math.max(maxIndex, value);
+          hrefMax = Math.max(hrefMax, value);
         }
       } catch {
         // Ignore malformed links.
@@ -2429,8 +2454,23 @@ const CONTENT_BUILD_HASH = "1151";
     }
 
     const htmlEvidenceMax = extractInstagramCarouselCountFromHtml(postCode);
-    maxIndex = Math.max(maxIndex, htmlEvidenceMax);
-    if (maxIndex === 0 && root) {
+    let visibleCount = 0;
+    let liveDistinctCount = 0;
+    const hrefOrHtmlMax = Math.max(hrefMax, htmlEvidenceMax);
+    if (hrefOrHtmlMax > 0) {
+      return {
+        count: hrefOrHtmlMax,
+        source: hrefMax >= htmlEvidenceMax ? "href" : "html",
+        hrefMax,
+        htmlEvidenceMax,
+        visibleCount,
+        liveDistinctCount,
+        usedHint: false,
+        hintValue: Number(maxIndexHint || 0) || 0,
+      };
+    }
+
+    if (root) {
       const candidateImages = collectVisualCandidates(root, {
         minArea: 20000,
         isAllowed: (img, candidate) =>
@@ -2444,12 +2484,23 @@ const CONTENT_BUILD_HASH = "1151";
         const allowedLinkTypes = new Set(["none", "self-post", "other-link"]);
         const narrowed = firstCluster.filter((candidate) => allowedLinkTypes.has(candidate.linkType));
         const clusterCandidates = narrowed.length ? narrowed : firstCluster.slice(0, 10);
-        const visibleCount = createUrlSetFromCandidates(clusterCandidates).size || clusterCandidates.length;
-        maxIndex = Math.max(maxIndex, visibleCount > 0 ? visibleCount : 1);
+        visibleCount = createUrlSetFromCandidates(clusterCandidates).size || clusterCandidates.length;
+        if (visibleCount > 0) {
+          return {
+            count: visibleCount,
+            source: "visible-cluster",
+            hrefMax,
+            htmlEvidenceMax,
+            visibleCount,
+            liveDistinctCount,
+            usedHint: false,
+            hintValue: Number(maxIndexHint || 0) || 0,
+          };
+        }
       }
     }
 
-    if (maxIndex === 0 && root) {
+    if (root) {
       const containerTop = getContainerTop(root);
       const liveImages = Array.from(root.querySelectorAll("img"))
         .filter((img) => img instanceof HTMLImageElement)
@@ -2481,15 +2532,38 @@ const CONTENT_BUILD_HASH = "1151";
             }
           })
         );
-        maxIndex = Math.max(maxIndex, distinctSources.size || 1);
+        liveDistinctCount = distinctSources.size || 0;
+        if (liveDistinctCount > 0) {
+          return {
+            count: liveDistinctCount,
+            source: "live-images",
+            hrefMax,
+            htmlEvidenceMax,
+            visibleCount,
+            liveDistinctCount,
+            usedHint: false,
+            hintValue: Number(maxIndexHint || 0) || 0,
+          };
+        }
       }
     }
 
-    if (maxIndex > 0) {
-      return maxIndex;
-    }
+    const hintValue = Number(maxIndexHint || 0) || 0;
+    return {
+      count: hintValue > 0 ? hintValue : 0,
+      source: hintValue > 0 ? "hint" : "none",
+      hrefMax,
+      htmlEvidenceMax,
+      visibleCount,
+      liveDistinctCount,
+      usedHint: hintValue > 0,
+      hintValue,
+    };
+  }
 
-    return maxIndexHint > 0 ? maxIndexHint : 0;
+  async function extractInstagramCarouselCount(root, maxIndexHint = 0) {
+    const evidence = await getInstagramCarouselEvidence(root, maxIndexHint);
+    return evidence.count;
   }
 
   function extractCurrentImgIndex() {
@@ -2518,7 +2592,19 @@ const CONTENT_BUILD_HASH = "1151";
     const originalMediaKeys = platformMedia?.originalMediaKeys || null;
     const originals = images.filter((item) => item.isOriginal).length;
     const instagramContainer = /instagram\.com$/i.test(location.hostname) ? findInstagramPostContainer() : null;
-    const instagramMaxImgIndex = instagramContainer ? await extractInstagramCarouselCount(instagramContainer, maxIndexHint) : maxIndexHint;
+    const instagramCarouselEvidence = instagramContainer
+      ? await getInstagramCarouselEvidence(instagramContainer, maxIndexHint)
+      : {
+          count: maxIndexHint,
+          source: maxIndexHint > 0 ? "hint" : "none",
+          hrefMax: 0,
+          htmlEvidenceMax: 0,
+          visibleCount: 0,
+          liveDistinctCount: 0,
+          usedHint: maxIndexHint > 0,
+          hintValue: maxIndexHint,
+        };
+    const instagramMaxImgIndex = instagramCarouselEvidence.count;
     const debug = {
       domain: location.hostname,
       contentBuildHash: CONTENT_BUILD_HASH,
@@ -2535,6 +2621,7 @@ const CONTENT_BUILD_HASH = "1151";
         currentImgIndex: extractCurrentImgIndex(),
         maxImgIndex: instagramMaxImgIndex,
         maxIndexHint,
+        countEvidence: instagramCarouselEvidence,
         articleFound: !!document.querySelector("main article"),
         articleTop: instagramContainer ? getContainerTop(instagramContainer) : null,
         containerFound: !!instagramContainer,
