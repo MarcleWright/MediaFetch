@@ -228,6 +228,12 @@ const CONTENT_BUILD_HASH = "1151";
         sourceHint,
       };
       if (behanceMediaKey) {
+        hydrateKnownMediaMetadata(item, {
+          width: item.width || width,
+          height: item.height || height,
+        });
+      }
+      if (behanceMediaKey) {
         const existing = seenBehanceMediaItems.get(behanceMediaKey);
         if (existing) {
           hydrateKnownMediaMetadata(item, existing);
@@ -2034,7 +2040,7 @@ const CONTENT_BUILD_HASH = "1151";
     if (/(original|orig|full|master|raw|source|highres|hires|largest|large|xl|xxl|4096|2048)/.test(lowered)) {
       score += 120;
     }
-    if (/\/project_modules\/max_3840(?:_[^/]+)?\//i.test(lowered)) {
+    if (/\/project_modules\/[^/]*max_3840[^/]*\//i.test(lowered)) {
       score += 220;
     }
     if (/\/\/[^/]+\.sinaimg\.cn\/(?:mw2000|large|mw1024|oslarge)\//i.test(lowered)) {
@@ -5065,7 +5071,7 @@ const CONTENT_BUILD_HASH = "1151";
       return urls;
     }
 
-    const behanceHighResBucketPattern = "(?:source|max_3840|max_2560|max_1920|3840|2560|1920)(?:_[a-z0-9]+)*";
+    const behanceHighResBucketPattern = "(?:source|[^/]*max_3840[^/]*|max_2560|max_1920|3840|2560|1920)";
 
     const patterns = [
       new RegExp(
@@ -5138,7 +5144,7 @@ const CONTENT_BUILD_HASH = "1151";
       const match = pathname.match(/\/project_modules\/([^/]+)\//i);
       const bucket = match ? match[1].toLowerCase() : "";
       if (/^source/.test(bucket)) return 6;
-      if (/max_3840|(?:^|_)3840(?:_|$)/.test(bucket)) return 5;
+      if (/max_3840/i.test(bucket) || /(?:^|_)3840(?:_|$)/.test(bucket)) return 5;
       if (/max_2560|(?:^|_)2560(?:_|$)/.test(bucket)) return 4;
       if (/max_1920|(?:^|_)1920(?:_|$)/.test(bucket)) return 3;
       if (/^fs(?:_|$)/.test(bucket)) return 2;
@@ -5171,13 +5177,21 @@ const CONTENT_BUILD_HASH = "1151";
     const targetHeight = Number(target.height || 0);
     const sourceWidth = Number(source.width || 0);
     const sourceHeight = Number(source.height || 0);
-    if ((!targetWidth || !targetHeight) && sourceWidth && sourceHeight) {
-      const inferred = inferBehanceVariantDimensions(target.url, {
-        width: sourceWidth,
-        height: sourceHeight,
-      });
-      const width = inferred.width || sourceWidth;
-      const height = inferred.height || sourceHeight;
+    if (!sourceWidth || !sourceHeight) {
+      return;
+    }
+
+    const inferred = inferBehanceVariantDimensions(target.url, {
+      width: sourceWidth,
+      height: sourceHeight,
+    });
+    const width = inferred.width || sourceWidth;
+    const height = inferred.height || sourceHeight;
+    if (!width || !height) {
+      return;
+    }
+
+    if (width > targetWidth || height > targetHeight || !targetWidth || !targetHeight) {
       target.width = width;
       target.height = height;
       target.area = width * height;
@@ -5214,7 +5228,7 @@ const CONTENT_BUILD_HASH = "1151";
       const pathname = new URL(url).pathname.toLowerCase();
       const match = pathname.match(/\/project_modules\/([^/]+)\//i);
       const bucket = match ? match[1].toLowerCase() : "";
-      if (/max_3840|(?:^|_)3840(?:_|$)/.test(bucket)) return 3840;
+      if (/max_3840/i.test(bucket) || /(?:^|_)3840(?:_|$)/.test(bucket)) return 3840;
       if (/max_2560|(?:^|_)2560(?:_|$)/.test(bucket)) return 2560;
       if (/max_1920|(?:^|_)1920(?:_|$)/.test(bucket)) return 1920;
       return 0;
