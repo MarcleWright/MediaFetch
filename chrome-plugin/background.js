@@ -11,11 +11,11 @@ const DOWNLOAD_ORIGINALS_MENU_ID = "mediafetch-download-originals";
 const WEIBO_DOWNLOAD_RULE_ID = 901001;
 const METADATA_SENTINEL_FILE_NAME = "__mediafetch_metadata__.json";
 const DOWNLOAD_STRATEGY_DIRECT = "direct";
-const DOWNLOAD_STRATEGY_FETCH_IMAGE = "fetchImage";
+const DOWNLOAD_STRATEGY_FETCH_BLOB = "fetchBlob";
 const HEIC_CONVERTER_OFFSCREEN_URL = "offscreen.html";
 const DOWNLOAD_STRATEGY_RULES = [
-  { strategy: DOWNLOAD_STRATEGY_FETCH_IMAGE, test: isSinaimgUrl },
-  { strategy: DOWNLOAD_STRATEGY_FETCH_IMAGE, test: isXiaohongshuCdnUrl },
+  { strategy: DOWNLOAD_STRATEGY_FETCH_BLOB, test: isSinaimgUrl },
+  { strategy: DOWNLOAD_STRATEGY_FETCH_BLOB, test: isXiaohongshuCdnUrl },
 ];
 const features = globalThis.MEDIAFETCH_FEATURES || {};
 const lineageFeatureEnabled = !!features.lineageIntegration;
@@ -111,7 +111,7 @@ chrome.runtime.onMessage.addListener((message, _sender, sendResponse) => {
     const taskId = enqueueDownloadTask({
       type: "selection",
       folder: message.folder || "",
-      images: Array.isArray(message.images) ? message.images : [],
+      media: Array.isArray(message.media) ? message.media : Array.isArray(message.images) ? message.images : [],
       metadata: message.metadata || null,
       pageUrl: message.pageUrl || "",
       lineage: message.lineage || null,
@@ -172,6 +172,7 @@ chrome.runtime.onMessage.addListener((message, _sender, sendResponse) => {
       maxIndexHint: Number(message.maxIndexHint || 0) || 0,
       sourceTabIndex: Number.isFinite(message.sourceTabIndex) ? Number(message.sourceTabIndex) : null,
       extractionMode: String(message.extractionMode || WEIBO_ALBUM_EXTRACTION_MODE),
+      extractionRange: String(message.extractionRange || "images"),
     })
       .then((result) => sendResponse({ ok: true, response: result }))
       .catch((error) => sendResponse({
@@ -186,6 +187,7 @@ chrome.runtime.onMessage.addListener((message, _sender, sendResponse) => {
       sourceUrl: message.sourceUrl || "",
       sourceTabIndex: Number.isFinite(message.sourceTabIndex) ? Number(message.sourceTabIndex) : null,
       extractionMode: String(message.extractionMode || "background"),
+      extractionRange: String(message.extractionRange || "images"),
     })
       .then((result) => sendResponse({ ok: true, response: result }))
       .catch((error) => sendResponse({
@@ -382,7 +384,7 @@ async function downloadOriginalsFromTab(tab) {
   });
 }
 
-async function extractWeiboAlbumInBackground({ albumDetailUrl, maxIndexHint = 0, albumDebug = null, sourceTabIndex = null, extractionMode = WEIBO_ALBUM_EXTRACTION_MODE }) {
+async function extractWeiboAlbumInBackground({ albumDetailUrl, maxIndexHint = 0, albumDebug = null, sourceTabIndex = null, extractionMode = WEIBO_ALBUM_EXTRACTION_MODE, extractionRange = "images" }) {
   const targetUrl = normalizeHttpUrl(albumDetailUrl || "");
   if (!targetUrl) {
     throw new Error("Invalid Weibo album detail URL.");
@@ -400,10 +402,11 @@ async function extractWeiboAlbumInBackground({ albumDetailUrl, maxIndexHint = 0,
 
     const loadedTab = await chrome.tabs.get(tempTab.id);
     const instagramSamples = { urls: [], indexes: [] };
-    const weiboSamples = await collectWeiboRenderedSamples(loadedTab);
+    const includeImageFlow = String(extractionRange || "images") !== "videos";
+    const weiboSamples = includeImageFlow ? await collectWeiboRenderedSamples(loadedTab) : { urls: [], layerIds: [] };
     const sampledUrls = [...instagramSamples.urls, ...weiboSamples.urls];
     const sampledIndexes = [...instagramSamples.indexes, ...weiboSamples.layerIds];
-    const response = await requestExtraction(loadedTab, maxIndexHint, sampledUrls, sampledIndexes);
+    const response = await requestExtraction(loadedTab, maxIndexHint, sampledUrls, sampledIndexes, extractionRange);
     if (!response?.ok) {
       throw new Error(response?.error || "Extraction failed.");
     }
@@ -426,7 +429,7 @@ async function extractWeiboAlbumInBackground({ albumDetailUrl, maxIndexHint = 0,
   }
 }
 
-async function extractInstagramInBackground({ sourceUrl, sourceTabIndex = null, extractionMode = "background" }) {
+async function extractInstagramInBackground({ sourceUrl, sourceTabIndex = null, extractionMode = "background", extractionRange = "images" }) {
   const targetUrl = normalizeHttpUrl(sourceUrl || "");
   if (!targetUrl) {
     throw new Error("Invalid Instagram URL.");
@@ -443,36 +446,48 @@ async function extractInstagramInBackground({ sourceUrl, sourceTabIndex = null, 
     await delay(1200);
 
     const loadedTab = await chrome.tabs.get(tempTab.id);
-    const instagramNav = await resolveInstagramNavigationContext(loadedTab);
+    const includeImageFlow = String(extractionRange || "images") !== "videos";
+    const instagramNav = includeImageFlow
+      ? await resolveInstagramNavigationContext(loadedTab)
+      : {
+          resolvedPostPath: "",
+          initialCarouselCount: 0,
+          source: "",
+          context: null,
+        };
 
     let maxIndexHint = 0;
     let probeError = "";
-    try {
-      maxIndexHint = await probeInstagramMaxIndex(loadedTab, instagramNav, false);
-    } catch (error) {
-      probeError = error instanceof Error ? error.message : String(error);
-    }
-
-    const sampleMaxIndex = resolveInstagramSampleMaxIndex(maxIndexHint, instagramNav.initialCarouselCount);
+    let sampleMaxIndex = 0;
     let instagramSamples = { urls: [], indexes: [] };
     let instagramSamplingError = "";
-    try {
-      instagramSamples = await collectInstagramRenderedSamples(loadedTab, instagramNav.resolvedPostPath, sampleMaxIndex, false);
-    } catch (error) {
-      instagramSamplingError = error instanceof Error ? error.message : String(error);
-    }
-
     let weiboSamples = { urls: [], layerIds: [] };
     let weiboSamplingError = "";
-    try {
-      weiboSamples = await collectWeiboRenderedSamples(loadedTab);
-    } catch (error) {
-      weiboSamplingError = error instanceof Error ? error.message : String(error);
+
+    if (includeImageFlow) {
+      try {
+        maxIndexHint = await probeInstagramMaxIndex(loadedTab, instagramNav, false);
+      } catch (error) {
+        probeError = error instanceof Error ? error.message : String(error);
+      }
+
+      sampleMaxIndex = resolveInstagramSampleMaxIndex(maxIndexHint, instagramNav.initialCarouselCount);
+      try {
+        instagramSamples = await collectInstagramRenderedSamples(loadedTab, instagramNav.resolvedPostPath, sampleMaxIndex, false);
+      } catch (error) {
+        instagramSamplingError = error instanceof Error ? error.message : String(error);
+      }
+
+      try {
+        weiboSamples = await collectWeiboRenderedSamples(loadedTab);
+      } catch (error) {
+        weiboSamplingError = error instanceof Error ? error.message : String(error);
+      }
     }
 
     const sampledUrls = [...instagramSamples.urls, ...weiboSamples.urls];
     const sampledIndexes = [...instagramSamples.indexes, ...weiboSamples.layerIds];
-    const response = await requestExtraction(loadedTab, sampleMaxIndex, sampledUrls, sampledIndexes);
+    const response = await requestExtraction(loadedTab, sampleMaxIndex, sampledUrls, sampledIndexes, extractionRange);
     if (!response?.ok) {
       throw new Error(response?.error || "Extraction failed.");
     }
@@ -481,7 +496,7 @@ async function extractInstagramInBackground({ sourceUrl, sourceTabIndex = null, 
     response.debug.client = {
       ...(response.debug.client || {}),
       version: "0.2.1",
-      contentBuildHash: "1151",
+      contentBuildHash: "1152",
       probeError,
       instagramSamplingError,
       weiboSamplingError,
@@ -500,6 +515,10 @@ async function extractInstagramInBackground({ sourceUrl, sourceTabIndex = null, 
       instagramBackgroundTabOpened: true,
       instagramExtractionMode: extractionMode,
       instagramSourceUrl: targetUrl,
+      instagramContextSource: includeImageFlow ? instagramNav.source || "" : "",
+      instagramInitialCarouselCount: includeImageFlow ? instagramNav.initialCarouselCount || 0 : 0,
+      instagramResolvedPostPath: includeImageFlow ? instagramNav.resolvedPostPath || "" : "",
+      extractionRange,
     };
 
     return response;
@@ -549,17 +568,24 @@ async function downloadOriginalsFromLink(sourceTab, linkUrl) {
 }
 
 async function downloadSelectionTask(task) {
-  const selected = Array.isArray(task.images) ? task.images.filter((item) => item?.url) : [];
+  const selected = Array.isArray(task.media)
+    ? task.media.filter((item) => item?.url)
+    : Array.isArray(task.images)
+      ? task.images.filter((item) => item?.url)
+      : [];
   if (!selected.length) {
-    throw new Error("No images selected.");
+    throw new Error("No media selected.");
   }
 
   const folder = sanitizePathPart(task.folder || "ProjectsA") || "ProjectsA";
-  const originalCount = selected.filter((item) => item?.isOriginal).length;
+  const counts = countMediaTypes(selected);
+  const originalCount = selected.filter((item) => item?.mediaType !== "video" && item?.isOriginal).length;
   const metadata = buildDownloadMetadata(task.metadata, {
     folderName: folder,
-    imageCount: selected.length,
+    imageCount: counts.images,
     originalCount,
+    videoCount: counts.videos,
+    counts,
     pluginVersion: "0.2.1",
   });
   await downloadImageBatch(selected, {
@@ -573,7 +599,7 @@ async function downloadSelectionTask(task) {
   });
 }
 
-async function downloadImageBatch(images, options) {
+async function downloadImageBatch(mediaItems, options) {
   const requestedFolder = sanitizePathPart(options.folder || "ProjectsA") || "ProjectsA";
   const folder = options.lineageOnly
     ? buildLineageTempFolderName(requestedFolder)
@@ -582,15 +608,15 @@ async function downloadImageBatch(images, options) {
   const filePrefix = getDownloadFilePrefix(options.metadata);
   currentDownloadFolder = folder;
   currentDownloadReferer = referer;
-  await setupDownloadHeaderRules(images.map((item) => item.url), referer);
-  pendingDownloadFileNames = images.map((item, index) => {
+  await setupDownloadHeaderRules(mediaItems.map((item) => item.url), referer);
+  pendingDownloadFileNames = mediaItems.map((item, index) => {
     const extension = inferOutputExtension(item, options);
     return buildIndexedFileName(filePrefix, index, extension);
   });
 
   const downloadRecords = [];
-  for (let i = 0; i < images.length; i += 1) {
-    const item = images[i];
+  for (let i = 0; i < mediaItems.length; i += 1) {
+    const item = mediaItems[i];
     const extension = inferOutputExtension(item, options);
     const fileName = buildIndexedFileName(filePrefix, i, extension);
     const downloadId = await executeDownloadStrategy(item, fileName, {
@@ -618,13 +644,16 @@ async function downloadImageBatch(images, options) {
       pageUrl: options.pageUrl || "",
     });
     if (options.eagle) {
-      await saveImagesToEagle({
-        images,
-        metadata: options.metadata || {},
-        pageUrl: options.pageUrl || "",
-        eagle: options.eagle,
-        convertHeicToPng: !!options.convertHeicToPng,
-      });
+      const eagleImages = mediaItems.filter((item) => item.mediaType !== "video");
+      if (eagleImages.length) {
+        await saveImagesToEagle({
+          images: eagleImages,
+          metadata: options.metadata || {},
+          pageUrl: options.pageUrl || "",
+          eagle: options.eagle,
+          convertHeicToPng: !!options.convertHeicToPng,
+        });
+      }
     }
   } finally {
     if (options.lineageOnly) {
@@ -686,16 +715,16 @@ async function executeDownloadStrategy(item, filename, context = {}) {
   }
 
   const strategy = selectDownloadStrategy(item, context);
-  if (strategy === DOWNLOAD_STRATEGY_FETCH_IMAGE) {
+  if (strategy === DOWNLOAD_STRATEGY_FETCH_BLOB) {
     try {
-      return await downloadFetchedImage(item.url, filename);
+      return await downloadFetchedBlob(item.url, filename);
     } catch (error) {
-      console.warn("MediaFetch fetch-image download failed; falling back to direct download.", error);
-      return await downloadDirectImage(item.url, filename);
+      console.warn("MediaFetch fetch-blob download failed; falling back to direct download.", error);
+      return await downloadDirectMedia(item.url, filename);
     }
   }
 
-  return await downloadDirectImage(item.url, filename);
+  return await downloadDirectMedia(item.url, filename);
 }
 
 async function downloadConvertedPng(url, filename) {
@@ -708,7 +737,7 @@ async function downloadConvertedPng(url, filename) {
   });
 }
 
-async function downloadDirectImage(url, filename) {
+async function downloadDirectMedia(url, filename) {
   return await downloadToChrome({
     url,
     filename,
@@ -731,6 +760,8 @@ function buildIndexedFileName(prefix, index, extension) {
 function inferOutputExtension(item, options = {}) {
   return shouldConvertHeicToPng(item, options)
     ? "png"
+    : item?.mediaType === "video"
+      ? inferVideoExtension(item?.url, item?.format)
     : inferExtension(item?.url, item?.format);
 }
 
@@ -751,14 +782,44 @@ function isHeicImage(url, format) {
   }
 }
 
+function inferVideoExtension(url, format) {
+  const normalizedFormat = String(format || "").trim().toUpperCase();
+  if (normalizedFormat === "MP4") return "mp4";
+  if (normalizedFormat === "WEBM") return "webm";
+  if (normalizedFormat === "MOV") return "mov";
+  if (normalizedFormat === "M4V") return "m4v";
+  if (normalizedFormat === "OGV") return "ogv";
+
+  try {
+    const pathname = new URL(String(url || "")).pathname.toLowerCase();
+    const match = pathname.match(/\.([a-z0-9]+)$/);
+    if (match && ["mp4", "webm", "mov", "m4v", "ogv"].includes(match[1])) {
+      return match[1];
+    }
+  } catch {
+    const lowered = String(url || "").toLowerCase();
+    const match = lowered.match(/\.([a-z0-9]+)(?:$|[?#])/);
+    if (match && ["mp4", "webm", "mov", "m4v", "ogv"].includes(match[1])) {
+      return match[1];
+    }
+  }
+
+  return "mp4";
+}
+
 // Network quirks are centralized here so download batching stays platform-neutral.
 function selectDownloadStrategy(item, _context = {}) {
+  const hinted = String(item?.download?.strategy || "").trim();
+  if (hinted === DOWNLOAD_STRATEGY_FETCH_BLOB || hinted === DOWNLOAD_STRATEGY_DIRECT) {
+    return hinted;
+  }
+
   const url = item?.url || "";
   const rule = DOWNLOAD_STRATEGY_RULES.find((entry) => entry.test(url, item, _context));
   return rule?.strategy || DOWNLOAD_STRATEGY_DIRECT;
 }
 
-async function downloadFetchedImage(url, filename) {
+async function downloadFetchedBlob(url, filename) {
   const response = await fetch(url, {
     method: "GET",
     credentials: "include",
@@ -766,20 +827,22 @@ async function downloadFetchedImage(url, filename) {
   });
 
   if (!response.ok) {
-    throw new Error(`Image request failed: ${response.status}`);
+    throw new Error(`Media request failed: ${response.status}`);
   }
 
   const contentType = String(response.headers.get("content-type") || "").toLowerCase();
-  if (!isFetchedImageContentTypeAllowed(contentType)) {
+  if (!isFetchedMediaContentTypeAllowed(contentType)) {
     throw new Error(`Unexpected response type: ${contentType}`);
   }
 
   const bytes = new Uint8Array(await response.arrayBuffer());
   if (!bytes.length) {
-    throw new Error("Image response was empty.");
+    throw new Error("Media response was empty.");
   }
 
-  const mimeType = contentType.startsWith("image/") ? contentType : inferMimeTypeFromFilename(filename);
+  const mimeType = contentType.startsWith("image/") || contentType.startsWith("video/")
+    ? contentType
+    : inferMimeTypeFromFilename(filename);
   const dataUrl = `data:${mimeType};base64,${encodeBase64(bytes)}`;
   return await downloadToChrome({
     url: dataUrl,
@@ -789,10 +852,11 @@ async function downloadFetchedImage(url, filename) {
   });
 }
 
-function isFetchedImageContentTypeAllowed(contentType) {
+function isFetchedMediaContentTypeAllowed(contentType) {
   return (
     !contentType ||
     contentType.startsWith("image/") ||
+    contentType.startsWith("video/") ||
     contentType === "application/octet-stream" ||
     contentType === "binary/octet-stream"
   );
@@ -807,6 +871,11 @@ function inferMimeTypeFromFilename(filename) {
   if (extension === "heic") return "image/heic";
   if (extension === "heif") return "image/heif";
   if (extension === "svg") return "image/svg+xml";
+  if (extension === "mp4") return "video/mp4";
+  if (extension === "webm") return "video/webm";
+  if (extension === "mov") return "video/quicktime";
+  if (extension === "m4v") return "video/x-m4v";
+  if (extension === "ogv") return "video/ogg";
   return "image/jpeg";
 }
 
@@ -901,9 +970,9 @@ async function setupDownloadHeaderRules(urls, referer = "https://weibo.com/") {
   });
 }
 
-async function requestExtraction(tab, maxIndexHint = 0, sampledUrls = [], sampledIndexes = []) {
+async function requestExtraction(tab, maxIndexHint = 0, sampledUrls = [], sampledIndexes = [], extractionRange = "images") {
   try {
-    return await sendTabMessage(tab.id, { type: "mediafetch:extract", maxIndexHint, sampledUrls, sampledIndexes });
+    return await sendTabMessage(tab.id, { type: "mediafetch:extract", maxIndexHint, sampledUrls, sampledIndexes, extractionRange });
   } catch {
     const canInject = /^https?:/i.test(tab.url || "");
     if (!canInject) {
@@ -914,7 +983,7 @@ async function requestExtraction(tab, maxIndexHint = 0, sampledUrls = [], sample
       target: { tabId: tab.id },
       files: ["content.js"],
     });
-    return await sendTabMessage(tab.id, { type: "mediafetch:extract", maxIndexHint, sampledUrls, sampledIndexes });
+    return await sendTabMessage(tab.id, { type: "mediafetch:extract", maxIndexHint, sampledUrls, sampledIndexes, extractionRange });
   }
 }
 
@@ -1437,14 +1506,33 @@ async function downloadTextFile(text, filename) {
 }
 
 function buildDownloadMetadata(baseMetadata, options) {
+  const counts = options.counts || {
+    images: Number(options.imageCount || 0),
+    videos: Number(options.videoCount || 0),
+  };
   return {
     ...(baseMetadata || {}),
     folderName: options.folderName,
     downloadedAt: new Date().toISOString(),
     imageCount: Number(options.imageCount || 0),
     originalCount: Number(options.originalCount || 0),
+    videoCount: Number(options.videoCount || 0),
+    counts,
     pluginVersion: options.pluginVersion || "0.2.1",
   };
+}
+
+function countMediaTypes(media) {
+  return Array.isArray(media)
+    ? media.reduce((acc, item) => {
+      if (item?.mediaType === "video") {
+        acc.videos += 1;
+      } else {
+        acc.images += 1;
+      }
+      return acc;
+    }, { images: 0, videos: 0 })
+    : { images: 0, videos: 0 };
 }
 
 async function importDownloadsToLineage(downloadRecords, options = {}) {
@@ -1879,6 +1967,12 @@ function buildEagleTags(metadata) {
 }
 
 function inferExtension(url, format) {
+  const normalizedFormat = String(format || "").trim().toUpperCase();
+  if (normalizedFormat === "MP4") return "mp4";
+  if (normalizedFormat === "WEBM") return "webm";
+  if (normalizedFormat === "MOV") return "mov";
+  if (normalizedFormat === "M4V") return "m4v";
+  if (normalizedFormat === "OGV") return "ogv";
   if (format === "PNG") return "png";
   if (format === "JPEG") return "jpg";
   if (format === "GIF") return "gif";

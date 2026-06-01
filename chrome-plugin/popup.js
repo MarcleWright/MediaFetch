@@ -1,9 +1,16 @@
 const state = {
-  images: [],
+  media: [],
+  get images() {
+    return this.media;
+  },
+  set images(value) {
+    this.media = Array.isArray(value) ? value : [];
+  },
   projectName: "ProjectsA",
   metadata: null,
   folderTouched: false,
   settings: null,
+  extractionRange: "images",
   view: "main",
 };
 
@@ -16,6 +23,7 @@ const selectAllBtn = document.getElementById("selectAllBtn");
 const clearBtn = document.getElementById("clearBtn");
 const selectOriginalBtn = document.getElementById("selectOriginalBtn");
 const downloadBtn = document.getElementById("downloadBtn");
+const extractionRangeInput = document.getElementById("extractionRange");
 const clipboardUrlInput = document.getElementById("clipboardUrlInput");
 const clipboardUrlEl = document.getElementById("clipboardUrl");
 const clipboardDownloadBtn = document.getElementById("clipboardDownloadBtn");
@@ -74,6 +82,7 @@ const popupSettingsDefaults = {
   showLineage: true,
   showEagle: true,
   convertHeicToPng: false,
+  extractionRange: "images",
 };
 const lineageFolderTreeState = {
   folders: [],
@@ -99,21 +108,25 @@ folderNameInput.addEventListener("change", () => {
 });
 
 refreshBtn.addEventListener("click", extractFromCurrentTab);
+extractionRangeInput?.addEventListener("change", async () => {
+  await savePopupSetting("extractionRange", normalizeExtractionRange(extractionRangeInput.value));
+  await extractFromCurrentTab();
+});
 selectAllBtn.addEventListener("click", () => {
-  state.images.forEach((item) => {
+  getVisibleMediaItems().forEach((item) => {
     item.selected = true;
   });
   render();
 });
 clearBtn.addEventListener("click", () => {
-  state.images.forEach((item) => {
+  getVisibleMediaItems().forEach((item) => {
     item.selected = false;
   });
   render();
 });
 selectOriginalBtn.addEventListener("click", () => {
-  state.images.forEach((item) => {
-    item.selected = !!item.isOriginal;
+  state.media.forEach((item) => {
+    item.selected = item.mediaType === "image" && !!item.isOriginal;
   });
   render();
 });
@@ -196,6 +209,7 @@ async function initializePopup() {
 async function initializePopupSettings() {
   const settings = await getStorageValues(popupSettingsDefaults);
   state.settings = normalizePopupSettings(settings);
+  state.extractionRange = state.settings.extractionRange;
 }
 
 async function initializeConvertHeicToPngSetting() {
@@ -244,6 +258,7 @@ function normalizePopupSettings(settings) {
     showLineage: merged.showLineage !== false,
     showEagle: merged.showEagle !== false,
     convertHeicToPng: !!merged.convertHeicToPng,
+    extractionRange: normalizeExtractionRange(merged.extractionRange || "images"),
   };
 }
 
@@ -251,12 +266,24 @@ function getPopupSettings() {
   return normalizePopupSettings(state.settings);
 }
 
+function normalizeExtractionRange(value) {
+  const normalized = String(value || "images").toLowerCase();
+  if (normalized === "videos" || normalized === "both") {
+    return normalized;
+  }
+  return "images";
+}
+
 async function savePopupSetting(key, value) {
   const nextSettings = {
     ...getPopupSettings(),
     [key]: !!value,
   };
+  if (key === "extractionRange") {
+    nextSettings.extractionRange = normalizeExtractionRange(value);
+  }
   state.settings = nextSettings;
+  state.extractionRange = nextSettings.extractionRange || state.extractionRange || "images";
   await chrome.storage.local.set(nextSettings);
   if (key === "showLineage" && nextSettings.showLineage) {
     await initializeLineageSettings();
@@ -280,6 +307,9 @@ function applyPopupSettingsToUi() {
   }
   if (convertHeicToPngInput) {
     convertHeicToPngInput.checked = settings.convertHeicToPng;
+  }
+  if (extractionRangeInput) {
+    extractionRangeInput.value = normalizeExtractionRange(settings.extractionRange || state.extractionRange || "images");
   }
 
   if (clipboardBoxEl) {
@@ -319,6 +349,10 @@ function getConvertHeicToPngSetting() {
   return !!convertHeicToPngInput?.checked;
 }
 
+function getExtractionRangeSetting() {
+  return normalizeExtractionRange(extractionRangeInput?.value || state.settings?.extractionRange || state.extractionRange || "images");
+}
+
 function saveConvertHeicToPngSetting() {
   if (!convertHeicToPngInput) {
     return Promise.resolve();
@@ -344,9 +378,131 @@ function updateClipboardLinkState(rawValue) {
       : "";
 }
 
+function getAllMediaItems() {
+  return Array.isArray(state.media) ? state.media : [];
+}
+
+function getVisibleMediaItems() {
+  const range = getExtractionRangeSetting();
+  const items = getAllMediaItems();
+  if (range === "images") {
+    return items.filter((item) => item.mediaType !== "video");
+  }
+  if (range === "videos") {
+    return items.filter((item) => item.mediaType === "video");
+  }
+  return items;
+}
+
+function getVisibleImages() {
+  return getVisibleMediaItems().filter((item) => item.mediaType !== "video");
+}
+
+function getVisibleVideos() {
+  return getVisibleMediaItems().filter((item) => item.mediaType === "video");
+}
+
+function getSelectedMediaItems() {
+  return getAllMediaItems().filter((item) => item.selected);
+}
+
+function normalizeMediaItem(item, index = 0) {
+  const mediaType = item?.mediaType === "video" ? "video" : "image";
+  const url = normalizeHttpUrl(item?.url || "");
+  const sourceUrl = normalizeHttpUrl(item?.sourceUrl || item?.url || "");
+  const downloadStrategy = String(item?.download?.strategy || (mediaType === "video" ? "direct" : "fetchBlob"));
+  return {
+    id: String(item?.id || `${mediaType}:${index + 1}`),
+    mediaType,
+    url,
+    sourceUrl,
+    thumbnail: normalizeHttpUrl(item?.thumbnail || "") || item?.thumbnail || url,
+    previewUrl: normalizeHttpUrl(item?.previewUrl || "") || item?.previewUrl || url,
+    posterUrl: normalizeHttpUrl(item?.posterUrl || "") || item?.posterUrl || "",
+    format: item?.format || "Unknown",
+    resolution: item?.resolution || "Unknown",
+    size: item?.size || "Unknown",
+    width: Number(item?.width || 0),
+    height: Number(item?.height || 0),
+    duration: Number(item?.duration || 0),
+    isOriginal: !!item?.isOriginal,
+    selected: !!item?.selected,
+    score: Number(item?.score || 0),
+    area: Number(item?.area || 0),
+    download: {
+      strategy: downloadStrategy === "fetchBlob" ? "fetchBlob" : "direct",
+    },
+  };
+}
+
+function normalizeExtractionMedia(response) {
+  const media = [];
+  const rawMedia = Array.isArray(response?.media) ? response.media : null;
+  if (rawMedia?.length) {
+    rawMedia.forEach((item, index) => {
+      media.push(normalizeMediaItem(item, index));
+    });
+    return media;
+  }
+
+  const rawImages = Array.isArray(response?.images) ? response.images : [];
+  rawImages.forEach((item, index) => {
+    media.push(normalizeMediaItem({
+      ...item,
+      mediaType: "image",
+      download: item?.download || { strategy: "fetchBlob" },
+    }, index));
+  });
+  return media;
+}
+
+function normalizeExtractionResponse(response) {
+  const media = normalizeExtractionMedia(response);
+  const images = media.filter((item) => item.mediaType !== "video");
+  const videos = media.filter((item) => item.mediaType === "video");
+  return {
+    ...response,
+    media,
+    images,
+    videos,
+  };
+}
+
+function countMediaTypes(media) {
+  return Array.isArray(media)
+    ? media.reduce((acc, item) => {
+      if (item?.mediaType === "video") {
+        acc.videos += 1;
+      } else {
+        acc.images += 1;
+      }
+      return acc;
+    }, { images: 0, videos: 0 })
+    : { images: 0, videos: 0 };
+}
+
+function renderMediaStatusText(media) {
+  const counts = countMediaTypes(media);
+  const total = counts.images + counts.videos;
+  if (!total) {
+    return "No media found on the current page.";
+  }
+
+  const parts = [`Found ${total} item(s)`];
+  if (counts.images) {
+    parts.push(`${counts.images} image(s)`);
+  }
+  if (counts.videos) {
+    parts.push(`${counts.videos} video(s)`);
+  }
+  return `${parts[0]}: ${parts.slice(1).join(", ")}.`;
+}
+
 async function extractFromCurrentTab() {
   try {
-    setStatus("Extracting images...");
+    const extractionRange = getExtractionRangeSetting();
+    state.extractionRange = extractionRange;
+    setStatus("Extracting media...");
     renderDebugInfo({
       phase: "query-tab",
     });
@@ -360,18 +516,21 @@ async function extractFromCurrentTab() {
       tabId: tab.id,
       tabUrl: tab.url || "",
       version: "0.2.1",
-      contentBuildHash: "1151",
+      contentBuildHash: "1152",
+      extractionRange,
     });
 
     const originalTabUrl = String(tab.url || "");
-    if (/^https:\/\/www\.instagram\.com\//i.test(originalTabUrl)) {
-      const response = await requestInstagramExtractionInBackground(tab);
+    const useSpecialImageFlow = extractionRange !== "videos";
+
+    if (useSpecialImageFlow && /^https:\/\/www\.instagram\.com\//i.test(originalTabUrl)) {
+      const response = await requestInstagramExtractionInBackground(tab, extractionRange);
       if (!response?.ok) {
         throw new Error(response?.error || "Instagram background extraction failed.");
       }
 
-      const extracted = response.response || response;
-      state.images = (extracted.images || []).map((item) => ({
+      const extracted = normalizeExtractionResponse(response.response || response);
+      state.media = extracted.media.map((item) => ({
         ...item,
         selected: false,
       }));
@@ -383,7 +542,7 @@ async function extractFromCurrentTab() {
       debug.client = {
         ...responseClient,
         version: "0.2.1",
-        contentBuildHash: "1151",
+        contentBuildHash: "1152",
         probeError: responseClient.probeError || "",
         instagramSamplingError: responseClient.instagramSamplingError || "",
         weiboSamplingError: responseClient.weiboSamplingError || "",
@@ -401,6 +560,7 @@ async function extractFromCurrentTab() {
         instagramBackgroundTabOpened: !!responseClient.instagramBackgroundTabOpened,
         instagramExtractionMode: responseClient.instagramExtractionMode || "background",
         instagramSourceUrl: originalTabUrl,
+        extractionRange,
       };
       renderDebugInfo(debug);
 
@@ -410,12 +570,12 @@ async function extractFromCurrentTab() {
         state.folderTouched = false;
       }
 
-      setStatus(state.images.length ? `Found ${state.images.length} image(s).` : "No images found on the current page.");
+      setStatus(renderMediaStatusText(state.media));
       render();
       return;
     }
 
-    if (isWeiboAlbumUrl(originalTabUrl)) {
+    if (useSpecialImageFlow && isWeiboAlbumUrl(originalTabUrl)) {
       let albumProbe = null;
       let albumProbeError = "";
       try {
@@ -430,22 +590,23 @@ async function extractFromCurrentTab() {
         throw new Error(albumProbeError || "Could not resolve Weibo album project ID.");
       }
 
-      const response = await requestWeiboAlbumExtractionInBackground(albumDetailUrl, 0, tab.index);
+      const response = await requestWeiboAlbumExtractionInBackground(albumDetailUrl, 0, tab.index, extractionRange);
       if (!response?.ok) {
         throw new Error(response?.error || "Weibo album background extraction failed.");
       }
 
-      state.images = (response.response?.images || response.images || []).map((item) => ({
+      const extracted = normalizeExtractionResponse(response.response || response);
+      state.media = extracted.media.map((item) => ({
         ...item,
         selected: false,
       }));
       const previousProjectName = state.projectName || "";
-      state.projectName = response.response?.projectName || response.projectName || "ProjectsA";
-      state.metadata = response.response?.metadata || response.metadata || null;
-      const debug = (response.response?.debug || response.debug || {});
+      state.projectName = extracted.projectName || "ProjectsA";
+      state.metadata = extracted.metadata || null;
+      const debug = extracted.debug || {};
       debug.client = {
         version: "0.2.1",
-        contentBuildHash: "1151",
+        contentBuildHash: "1152",
         probeError: "",
         instagramSamplingError: "",
         weiboSamplingError: "",
@@ -466,6 +627,7 @@ async function extractFromCurrentTab() {
         weiboAlbumExtractionMode: WEIBO_ALBUM_EXTRACTION_MODE,
         weiboAlbumRedirectError: "",
         weiboAlbumSourceUrl: originalTabUrl,
+        extractionRange,
       };
       if (debug.weibo && albumDebug) {
         debug.weibo.album = albumDebug;
@@ -478,39 +640,50 @@ async function extractFromCurrentTab() {
         state.folderTouched = false;
       }
 
-      setStatus(state.images.length ? `Found ${state.images.length} image(s).` : "No images found on the current page.");
+      setStatus(renderMediaStatusText(state.media));
       render();
       return;
     }
 
-    const instagramNav = await resolveInstagramNavigationContext(tab);
+    const instagramNav = useSpecialImageFlow ? await resolveInstagramNavigationContext(tab) : {
+      resolvedPostPath: "",
+      initialCarouselCount: 0,
+      source: "",
+      context: null,
+    };
     let maxIndexHint = 0;
     let probeError = "";
-    try {
-      maxIndexHint = await probeInstagramMaxIndex(tab, instagramNav);
-    } catch (error) {
-      probeError = error instanceof Error ? error.message : String(error);
+    if (useSpecialImageFlow) {
+      try {
+        maxIndexHint = await probeInstagramMaxIndex(tab, instagramNav);
+      } catch (error) {
+        probeError = error instanceof Error ? error.message : String(error);
+      }
     }
 
     let instagramSamples = { urls: [], indexes: [] };
     let instagramSamplingError = "";
-    try {
-      instagramSamples = await collectInstagramRenderedSamples(tab, instagramNav.resolvedPostPath, maxIndexHint);
-    } catch (error) {
-      instagramSamplingError = error instanceof Error ? error.message : String(error);
+    if (useSpecialImageFlow) {
+      try {
+        instagramSamples = await collectInstagramRenderedSamples(tab, instagramNav.resolvedPostPath, maxIndexHint);
+      } catch (error) {
+        instagramSamplingError = error instanceof Error ? error.message : String(error);
+      }
     }
 
     let weiboSamples = { urls: [], layerIds: [] };
     let weiboSamplingError = "";
-    try {
-      weiboSamples = await collectWeiboRenderedSamples(tab);
-    } catch (error) {
-      weiboSamplingError = error instanceof Error ? error.message : String(error);
+    if (useSpecialImageFlow) {
+      try {
+        weiboSamples = await collectWeiboRenderedSamples(tab);
+      } catch (error) {
+        weiboSamplingError = error instanceof Error ? error.message : String(error);
+      }
     }
 
     const sampledUrls = [...instagramSamples.urls, ...weiboSamples.urls];
     const sampledIndexes = [...instagramSamples.indexes, ...weiboSamples.layerIds];
-    let response = await requestExtraction(tab, maxIndexHint, sampledUrls, sampledIndexes);
+    let response = await requestExtraction(tab, maxIndexHint, sampledUrls, sampledIndexes, extractionRange);
     if (!response?.ok) {
       throw new Error(response?.error || "Extraction failed.");
     }
@@ -520,7 +693,7 @@ async function extractFromCurrentTab() {
     let albumRedirectedToDetail = false;
     let albumRedirectError = "";
     let albumOpenedProjectTab = false;
-    if (isWeiboAlbumUrl(originalTabUrl) && albumDetailUrl && normalizeHttpUrl(albumDetailUrl) && normalizeHttpUrl(albumDetailUrl) !== normalizeHttpUrl(originalTabUrl)) {
+    if (useSpecialImageFlow && isWeiboAlbumUrl(originalTabUrl) && albumDetailUrl && normalizeHttpUrl(albumDetailUrl) && normalizeHttpUrl(albumDetailUrl) !== normalizeHttpUrl(originalTabUrl)) {
       if (WEIBO_ALBUM_EXTRACTION_MODE === "visible") {
         try {
           const detailTab = await chrome.tabs.create({
@@ -535,7 +708,7 @@ async function extractFromCurrentTab() {
 
           const redirectedSampledUrls = [...instagramSamples.urls, ...weiboSamples.urls];
           const redirectedSampledIndexes = [...instagramSamples.indexes, ...weiboSamples.layerIds];
-          const redirectedResponse = await requestExtraction(detailTab, maxIndexHint, redirectedSampledUrls, redirectedSampledIndexes);
+          const redirectedResponse = await requestExtraction(detailTab, maxIndexHint, redirectedSampledUrls, redirectedSampledIndexes, extractionRange);
           if (!redirectedResponse?.ok) {
             throw new Error(redirectedResponse?.error || "Extraction failed.");
           }
@@ -552,7 +725,7 @@ async function extractFromCurrentTab() {
         }
       } else {
         try {
-          const backgroundResponse = await requestWeiboAlbumExtractionInBackground(albumDetailUrl, maxIndexHint, tab.index);
+          const backgroundResponse = await requestWeiboAlbumExtractionInBackground(albumDetailUrl, maxIndexHint, tab.index, extractionRange);
           if (!backgroundResponse?.ok) {
             throw new Error(backgroundResponse?.error || "Weibo album background extraction failed.");
           }
@@ -569,17 +742,18 @@ async function extractFromCurrentTab() {
       }
     }
 
-    state.images = (response.images || []).map((item) => ({
+    const extracted = normalizeExtractionResponse(response.response || response);
+    state.media = extracted.media.map((item) => ({
       ...item,
       selected: false,
     }));
     const previousProjectName = state.projectName || "";
-    state.projectName = response.projectName || "ProjectsA";
-    state.metadata = response.metadata || null;
-    const debug = response.debug || {};
+    state.projectName = extracted.projectName || "ProjectsA";
+    state.metadata = extracted.metadata || null;
+    const debug = extracted.debug || {};
     debug.client = {
       version: "0.2.1",
-      contentBuildHash: "1151",
+      contentBuildHash: "1152",
       probeError,
       instagramSamplingError,
       weiboSamplingError,
@@ -598,19 +772,20 @@ async function extractFromCurrentTab() {
       weiboAlbumExtractionMode: WEIBO_ALBUM_EXTRACTION_MODE,
       weiboAlbumRedirectError: albumRedirectError,
       weiboAlbumSourceUrl: originalTabUrl,
+      extractionRange,
     };
     renderDebugInfo(debug);
 
     const currentFolderInput = folderNameInput.value.trim();
     if (!state.folderTouched || !currentFolderInput || currentFolderInput === previousProjectName) {
       folderNameInput.value = state.projectName;
-      state.folderTouched = false;
-    }
+        state.folderTouched = false;
+      }
 
-    setStatus(state.images.length ? `Found ${state.images.length} image(s).` : "No images found on the current page.");
+    setStatus(renderMediaStatusText(state.media));
     render();
   } catch (error) {
-    state.images = [];
+    state.media = [];
     renderDebugInfo({
       phase: "error",
       version: "0.2.1",
@@ -621,9 +796,9 @@ async function extractFromCurrentTab() {
   }
 }
 
-async function requestExtraction(tab, maxIndexHint = 0, sampledUrls = [], sampledIndexes = []) {
+async function requestExtraction(tab, maxIndexHint = 0, sampledUrls = [], sampledIndexes = [], extractionRange = "images") {
   try {
-    return await chrome.tabs.sendMessage(tab.id, { type: "mediafetch:extract", maxIndexHint, sampledUrls, sampledIndexes });
+    return await chrome.tabs.sendMessage(tab.id, { type: "mediafetch:extract", maxIndexHint, sampledUrls, sampledIndexes, extractionRange });
   } catch (error) {
     const canInject = /^https?:/i.test(tab.url || "");
     if (!canInject) {
@@ -636,7 +811,7 @@ async function requestExtraction(tab, maxIndexHint = 0, sampledUrls = [], sample
     });
 
     try {
-      return await chrome.tabs.sendMessage(tab.id, { type: "mediafetch:extract", maxIndexHint, sampledUrls, sampledIndexes });
+      return await chrome.tabs.sendMessage(tab.id, { type: "mediafetch:extract", maxIndexHint, sampledUrls, sampledIndexes, extractionRange });
     } catch {
       throw new Error("Could not connect to the page. Reload the tab once and try again.");
     }
@@ -657,22 +832,24 @@ async function requestWeiboAlbumProbe(tab) {
   }
 }
 
-async function requestWeiboAlbumExtractionInBackground(albumDetailUrl, maxIndexHint = 0, sourceTabIndex = null) {
+async function requestWeiboAlbumExtractionInBackground(albumDetailUrl, maxIndexHint = 0, sourceTabIndex = null, extractionRange = "images") {
   return await chrome.runtime.sendMessage({
     type: "mediafetch:extract-weibo-album",
     albumDetailUrl,
     maxIndexHint,
     sourceTabIndex,
     extractionMode: WEIBO_ALBUM_EXTRACTION_MODE,
+    extractionRange,
   });
 }
 
-async function requestInstagramExtractionInBackground(tab) {
+async function requestInstagramExtractionInBackground(tab, extractionRange = "images") {
   return await chrome.runtime.sendMessage({
     type: "mediafetch:extract-instagram",
     sourceUrl: tab?.url || "",
     sourceTabIndex: Number.isFinite(tab?.index) ? tab.index : null,
     extractionMode: "background",
+    extractionRange,
   });
 }
 
@@ -1151,7 +1328,7 @@ function delay(ms) {
 }
 
 async function downloadSelected() {
-  const selected = state.images.filter((item) => item.selected);
+  const selected = getSelectedMediaItems();
   if (!selected.length) return;
 
   const folder = sanitizeFolderName(folderNameInput.value.trim() || state.projectName || "ProjectsA");
@@ -1161,11 +1338,22 @@ async function downloadSelected() {
     const [tab] = await chrome.tabs.query({ active: true, currentWindow: true });
     const result = await enqueueSelectionDownload({
       folder,
-      images: selected.map((item) => ({
+      media: selected.map((item) => ({
+        id: item.id,
         url: item.url,
         sourceUrl: item.sourceUrl,
         format: item.format,
+        mediaType: item.mediaType,
         isOriginal: !!item.isOriginal,
+        thumbnail: item.thumbnail,
+        previewUrl: item.previewUrl,
+        posterUrl: item.posterUrl,
+        resolution: item.resolution,
+        size: item.size,
+        width: item.width,
+        height: item.height,
+        duration: item.duration,
+        download: item.download,
       })),
       metadata: state.metadata,
       pageUrl: tab?.url || "",
@@ -1173,7 +1361,7 @@ async function downloadSelected() {
     });
     const queuedAhead = Number(result?.queuedAhead || 0);
     if (result?.active || queuedAhead > 0) {
-      setStatus(`Queued ${selected.length} image(s). ${queuedAhead} task(s) ahead.`);
+      setStatus(`Queued ${selected.length} item(s). ${queuedAhead} task(s) ahead.`);
       return;
     }
   } catch (error) {
@@ -1182,17 +1370,17 @@ async function downloadSelected() {
     return;
   }
 
-  setStatus(`Download started for ${selected.length} image(s) in "${folder}".`);
+  setStatus(`Download started for ${selected.length} item(s) in "${folder}".`);
 }
 
 async function saveSelectedToLineage() {
-  const selected = state.images.filter((item) => item.selected);
+  const selected = getVisibleImages().filter((item) => item.selected);
   await saveImagesToLineage(selected);
 }
 
 async function saveOriginalToLineage() {
-  const originals = state.images.filter((item) => item.isOriginal);
-  state.images.forEach((item) => {
+  const originals = getVisibleImages().filter((item) => item.isOriginal);
+  state.media.forEach((item) => {
     item.selected = !!item.isOriginal;
   });
   render();
@@ -1210,11 +1398,22 @@ async function saveImagesToLineage(selected) {
     const [tab] = await chrome.tabs.query({ active: true, currentWindow: true });
     const result = await enqueueSelectionDownload({
       folder,
-      images: selected.map((item) => ({
+      media: selected.map((item) => ({
+        id: item.id,
         url: item.url,
         sourceUrl: item.sourceUrl,
         format: item.format,
+        mediaType: item.mediaType,
         isOriginal: !!item.isOriginal,
+        thumbnail: item.thumbnail,
+        previewUrl: item.previewUrl,
+        posterUrl: item.posterUrl,
+        resolution: item.resolution,
+        size: item.size,
+        width: item.width,
+        height: item.height,
+        duration: item.duration,
+        download: item.download,
       })),
       metadata: state.metadata,
       pageUrl: tab?.url || "",
@@ -1235,13 +1434,13 @@ async function saveImagesToLineage(selected) {
 }
 
 async function saveSelectedToEagle() {
-  const selected = state.images.filter((item) => item.selected);
+  const selected = getVisibleImages().filter((item) => item.selected);
   await saveImagesToEagle(selected);
 }
 
 async function saveOriginalToEagle() {
-  const originals = state.images.filter((item) => item.isOriginal);
-  state.images.forEach((item) => {
+  const originals = getVisibleImages().filter((item) => item.isOriginal);
+  state.media.forEach((item) => {
     item.selected = !!item.isOriginal;
   });
   render();
@@ -1258,7 +1457,7 @@ async function saveImagesToEagle(selected) {
   try {
     const [tab] = await chrome.tabs.query({ active: true, currentWindow: true });
     const result = await sendImagesToEagle({
-      images: selected.map((item) => ({
+      images: selected.filter((item) => item.mediaType !== "video").map((item) => ({
         url: item.url,
         sourceUrl: item.sourceUrl,
         format: item.format,
@@ -1269,7 +1468,7 @@ async function saveImagesToEagle(selected) {
       eagle,
       convertHeicToPng: getConvertHeicToPngSetting(),
     });
-    setEagleStatus(`Saved ${Number(result?.importedCount || selected.length)} image(s) to Eagle.`, false);
+    setEagleStatus(`Saved ${Number(result?.importedCount || selected.filter((item) => item.mediaType !== "video").length)} image(s) to Eagle.`, false);
   } catch (error) {
     setEagleStatus(`Eagle save failed: ${error instanceof Error ? error.message : String(error)}`, true);
   }
@@ -1421,12 +1620,15 @@ function queueMetadataPath(path) {
 }
 
 function buildDownloadMetadata(baseMetadata, options) {
+  const counts = options.counts || { images: Number(options.imageCount || 0), videos: Number(options.videoCount || 0) };
   return {
     ...(baseMetadata || {}),
     folderName: options.folderName,
     downloadedAt: new Date().toISOString(),
     imageCount: Number(options.imageCount || 0),
     originalCount: Number(options.originalCount || 0),
+    videoCount: Number(options.videoCount || 0),
+    counts,
     pluginVersion: options.pluginVersion || "0.2.1",
   };
 }
@@ -1925,7 +2127,7 @@ async function probeLineageConnection() {
   setLineageStatus("Running Lineage probe...", false);
   const settings = await getLineageSettings();
   const probe = {
-    contentBuildHash: "1151",
+    contentBuildHash: "1152",
     featureEnabled: lineageFeatureEnabled,
     baseUrl: settings.baseUrl,
     tokenPresent: !!settings.token,
@@ -2405,14 +2607,18 @@ function normalizeHttpUrl(value) {
 function render() {
   resultsEl.innerHTML = "";
 
-  const selectedCount = state.images.filter((item) => item.selected).length;
-  const originalCount = state.images.filter((item) => item.isOriginal).length;
-  selectionStatus.textContent = `Selected: ${selectedCount} / ${state.images.length} | Original: ${originalCount}`;
+  const visibleItems = getVisibleMediaItems();
+  const selectedCount = visibleItems.filter((item) => item.selected).length;
+  const selectedTotalCount = getSelectedMediaItems().length;
+  const imageCount = visibleItems.filter((item) => item.mediaType !== "video").length;
+  const videoCount = visibleItems.filter((item) => item.mediaType === "video").length;
+  const originalCount = visibleItems.filter((item) => item.mediaType !== "video" && item.isOriginal).length;
+  selectionStatus.textContent = `Selected: ${selectedCount} / ${visibleItems.length} | Images: ${imageCount} | Videos: ${videoCount} | Original: ${originalCount}`;
 
-  selectAllBtn.disabled = state.images.length === 0;
-  clearBtn.disabled = state.images.length === 0;
-  selectOriginalBtn.disabled = originalCount === 0;
-  downloadBtn.disabled = selectedCount === 0;
+  selectAllBtn.disabled = visibleItems.length === 0;
+  clearBtn.disabled = visibleItems.length === 0;
+  selectOriginalBtn.disabled = originalCount === 0 || getExtractionRangeSetting() === "videos";
+  downloadBtn.disabled = selectedTotalCount === 0;
   if (lineageSaveSelectedBtn) {
     lineageSaveSelectedBtn.disabled = selectedCount === 0 || !lineageFeatureEnabled;
   }
@@ -2426,12 +2632,12 @@ function render() {
     eagleSaveOriginalBtn.disabled = originalCount === 0 || !eagleFeatureEnabled;
   }
 
-  for (const [index, item] of state.images.entries()) {
+  for (const [index, item] of visibleItems.entries()) {
     const card = document.createElement("article");
     card.className = "card";
     if (item.selected) card.classList.add("selected");
 
-    if (item.isOriginal) {
+    if (item.mediaType !== "video" && item.isOriginal) {
       const badge = document.createElement("span");
       badge.className = "badge";
       badge.textContent = "Original";
@@ -2440,11 +2646,23 @@ function render() {
 
     const thumb = document.createElement("div");
     thumb.className = "thumb";
-    const img = document.createElement("img");
-    img.loading = "lazy";
-    img.src = item.thumbnail || item.url;
-    img.alt = `image ${index + 1}`;
-    thumb.appendChild(img);
+    if (item.mediaType === "video") {
+      const poster = document.createElement("img");
+      poster.loading = "lazy";
+      poster.src = item.posterUrl || item.thumbnail || item.previewUrl || item.url;
+      poster.alt = `video ${index + 1}`;
+      thumb.appendChild(poster);
+      const videoBadge = document.createElement("span");
+      videoBadge.className = "badge";
+      videoBadge.textContent = "Video";
+      card.appendChild(videoBadge);
+    } else {
+      const img = document.createElement("img");
+      img.loading = "lazy";
+      img.src = item.thumbnail || item.url;
+      img.alt = `image ${index + 1}`;
+      thumb.appendChild(img);
+    }
     card.appendChild(thumb);
 
     const meta = document.createElement("div");
@@ -2452,6 +2670,9 @@ function render() {
     meta.appendChild(createPill(item.format || "Unknown"));
     meta.appendChild(createPill(item.resolution || "Unknown"));
     meta.appendChild(createPill(item.size || "Unknown"));
+    if (item.mediaType === "video") {
+      meta.appendChild(createPill(item.duration ? `${Math.round(item.duration)}s` : "Unknown"));
+    }
     card.appendChild(meta);
 
     card.addEventListener("click", () => {
