@@ -1,5 +1,5 @@
 (() => {
-const CONTENT_BUILD_HASH = "1153";
+const CONTENT_BUILD_HASH = "1154";
   const XIAOHONGSHU_DISPLAY_NAME = "\u5c0f\u7ea2\u4e66";
   const XIAOHONGSHU_SUFFIX_PATTERN = /\s*[|\-]\s*(?:\u5c0f\u7ea2\u4e66|Xiaohongshu)\b.*$/i;
   const XIAOHONGSHU_TITLE_PATTERN = /^(.{1,80}?)\s*(?:\u7684|on)\s*(?:\u5c0f\u7ea2\u4e66|Xiaohongshu)/i;
@@ -162,7 +162,20 @@ const CONTENT_BUILD_HASH = "1153";
     return true;
   });
 
-  async function extractImagesFromPage(maxIndexHint = 0, externalSampledUrls = [], externalSampledIndexes = []) {
+  async function extractImagesForPage(maxIndexHint = 0, externalSampledUrls = [], externalSampledIndexes = []) {
+    const host = location.hostname || "";
+    const domainRule = getImageDomainRule(host);
+    if (typeof domainRule === "function") {
+      const domainResult = await domainRule(maxIndexHint, externalSampledUrls, externalSampledIndexes);
+      if (domainResult) {
+        return domainResult;
+      }
+    }
+
+    return await extractGenericImages(maxIndexHint, externalSampledUrls, externalSampledIndexes);
+  }
+
+  async function extractGenericImages(maxIndexHint = 0, externalSampledUrls = [], externalSampledIndexes = []) {
     const items = [];
     const seen = new Set();
     const seenInstagramMediaItems = new Map();
@@ -379,7 +392,7 @@ const CONTENT_BUILD_HASH = "1153";
     const includeVideos = range !== "images";
 
     const imageResult = includeImages
-      ? await extractImagesFromPage(maxIndexHint, externalSampledUrls, externalSampledIndexes)
+      ? await extractImagesForPage(maxIndexHint, externalSampledUrls, externalSampledIndexes)
       : { images: [], debug: {} };
 
     const videoResult = includeVideos
@@ -387,10 +400,11 @@ const CONTENT_BUILD_HASH = "1153";
       : createEmptyVideoMediaResult();
 
     const imageMedia = convertImageItemsToMedia(imageResult.images || []);
-    const media = [
-      ...(includeImages ? imageMedia : []),
-      ...(includeVideos ? (videoResult.media || []) : []),
-    ];
+    const videoMedia = Array.isArray(videoResult.media) ? videoResult.media : [];
+    const media = mergeMediaResults({
+      images: includeImages ? imageMedia : [],
+      videos: includeVideos ? videoMedia : [],
+    });
 
     const counts = countMediaTypes(media);
     const imageCount = counts.images;
@@ -404,7 +418,7 @@ const CONTENT_BUILD_HASH = "1153";
     return {
       media,
       images: imageMedia,
-      videos: videoResult.media || [],
+      videos: videoMedia,
       debug,
       counts,
       imageCount,
@@ -451,6 +465,13 @@ const CONTENT_BUILD_HASH = "1153";
       : { images: 0, videos: 0 };
   }
 
+  function mergeMediaResults({ images = [], videos = [] } = {}) {
+    return [
+      ...(Array.isArray(images) ? images : []),
+      ...(Array.isArray(videos) ? videos : []),
+    ];
+  }
+
   async function extractVideosForPage() {
     const host = location.hostname || "";
     const domainRule = getVideoDomainRule(host);
@@ -466,6 +487,24 @@ const CONTENT_BUILD_HASH = "1153";
     }
 
     return await extractGenericVideos();
+  }
+
+  function getImageDomainRule(_host) {
+    const normalizedHost = String(_host || "").toLowerCase();
+    const supportedHosts = [
+      /(^|\.)instagram\.com$/i,
+      /(^|\.)behance\.net$/i,
+      /(^|\.)xiaohongshu\.com$/i,
+      /(^|\.)weibo\.com$/i,
+      /(^|\.)weixin\.qq\.com$/i,
+    ];
+    if (!supportedHosts.some((pattern) => pattern.test(normalizedHost))) {
+      return null;
+    }
+
+    return async (maxIndexHint = 0, externalSampledUrls = [], externalSampledIndexes = []) => {
+      return await extractGenericImages(maxIndexHint, externalSampledUrls, externalSampledIndexes);
+    };
   }
 
   async function extractGenericVideos() {

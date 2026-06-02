@@ -547,7 +547,7 @@ async function extractFromCurrentTab() {
       tabId: tab.id,
       tabUrl: tab.url || "",
       version: "0.2.1",
-      contentBuildHash: "1153",
+      contentBuildHash: "1154",
       extractionRange,
     });
 
@@ -570,7 +570,7 @@ async function extractFromCurrentTab() {
       debug.client = {
         ...responseClient,
         version: "0.2.1",
-        contentBuildHash: "1153",
+        contentBuildHash: "1154",
         probeError: responseClient.probeError || "",
         instagramSamplingError: responseClient.instagramSamplingError || "",
         weiboSamplingError: responseClient.weiboSamplingError || "",
@@ -631,7 +631,7 @@ async function extractFromCurrentTab() {
       const debug = extracted.debug || {};
       debug.client = {
         version: "0.2.1",
-        contentBuildHash: "1153",
+        contentBuildHash: "1154",
         probeError: "",
         instagramSamplingError: "",
         weiboSamplingError: "",
@@ -775,7 +775,7 @@ async function extractFromCurrentTab() {
     const debug = extracted.debug || {};
     debug.client = {
       version: "0.2.1",
-      contentBuildHash: "1153",
+      contentBuildHash: "1154",
       probeError,
       instagramSamplingError,
       weiboSamplingError,
@@ -2159,7 +2159,7 @@ async function probeLineageConnection() {
   setLineageStatus("Running Lineage probe...", false);
   const settings = await getLineageSettings();
   const probe = {
-    contentBuildHash: "1153",
+    contentBuildHash: "1154",
     featureEnabled: lineageFeatureEnabled,
     baseUrl: settings.baseUrl,
     tokenPresent: !!settings.token,

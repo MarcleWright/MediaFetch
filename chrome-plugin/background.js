@@ -256,7 +256,7 @@ async function downloadOriginalsFromTab(tab) {
       originalCount: originals.length,
       pluginVersion: "0.2.1",
     });
-    await downloadImageBatch(originals, {
+    await downloadMediaBatch(originals, {
       folder,
       metadata,
       pageUrl: response.pageUrl || tab.url || "",
@@ -297,7 +297,7 @@ async function downloadOriginalsFromTab(tab) {
       originalCount: originals.length,
       pluginVersion: "0.2.1",
     });
-    await downloadImageBatch(originals, {
+    await downloadMediaBatch(originals, {
       folder,
       metadata,
       pageUrl: response.pageUrl || tab.url || "",
@@ -376,7 +376,7 @@ async function downloadOriginalsFromTab(tab) {
     originalCount: originals.length,
     pluginVersion: "0.2.1",
   });
-  await downloadImageBatch(originals, {
+    await downloadMediaBatch(originals, {
     folder,
     metadata,
     pageUrl: response.pageUrl || tab.url || "",
@@ -496,7 +496,7 @@ async function extractInstagramInBackground({ sourceUrl, sourceTabIndex = null, 
     response.debug.client = {
       ...(response.debug.client || {}),
       version: "0.2.1",
-      contentBuildHash: "1153",
+      contentBuildHash: "1154",
       probeError,
       instagramSamplingError,
       weiboSamplingError,
@@ -588,7 +588,7 @@ async function downloadSelectionTask(task) {
     counts,
     pluginVersion: "0.2.1",
   });
-  await downloadImageBatch(selected, {
+  await downloadMediaBatch(selected, {
     folder,
     metadata,
     pageUrl: task.pageUrl || "",
@@ -599,7 +599,7 @@ async function downloadSelectionTask(task) {
   });
 }
 
-async function downloadImageBatch(mediaItems, options) {
+async function downloadMediaBatch(mediaItems, options) {
   const requestedFolder = sanitizePathPart(options.folder || "ProjectsA") || "ProjectsA";
   const folder = options.lineageOnly
     ? buildLineageTempFolderName(requestedFolder)
