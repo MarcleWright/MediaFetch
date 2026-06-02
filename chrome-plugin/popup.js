@@ -1,11 +1,7 @@
 const state = {
+  images: [],
+  videos: [],
   media: [],
-  get images() {
-    return this.media;
-  },
-  set images(value) {
-    this.media = Array.isArray(value) ? value : [];
-  },
   projectName: "ProjectsA",
   metadata: null,
   folderTouched: false,
@@ -125,9 +121,13 @@ clearBtn.addEventListener("click", () => {
   render();
 });
 selectOriginalBtn.addEventListener("click", () => {
-  state.media.forEach((item) => {
+  state.images.forEach((item) => {
     item.selected = item.mediaType === "image" && !!item.isOriginal;
   });
+  state.videos.forEach((item) => {
+    item.selected = false;
+  });
+  syncMergedMediaState();
   render();
 });
 settingsBtn?.addEventListener("click", () => {
@@ -395,11 +395,19 @@ function getVisibleMediaItems() {
 }
 
 function getVisibleImages() {
-  return getVisibleMediaItems().filter((item) => item.mediaType !== "video");
+  const range = getExtractionRangeSetting();
+  if (range === "videos") {
+    return [];
+  }
+  return Array.isArray(state.images) ? state.images : [];
 }
 
 function getVisibleVideos() {
-  return getVisibleMediaItems().filter((item) => item.mediaType === "video");
+  const range = getExtractionRangeSetting();
+  if (range === "images") {
+    return [];
+  }
+  return Array.isArray(state.videos) ? state.videos : [];
 }
 
 function getSelectedMediaItems() {
@@ -453,6 +461,15 @@ function normalizeExtractionMedia(response) {
       download: item?.download || { strategy: "fetchBlob" },
     }, index));
   });
+
+  const rawVideos = Array.isArray(response?.videos) ? response.videos : [];
+  rawVideos.forEach((item, index) => {
+    media.push(normalizeMediaItem({
+      ...item,
+      mediaType: "video",
+      download: item?.download || { strategy: "direct" },
+    }, rawImages.length + index));
+  });
   return media;
 }
 
@@ -466,6 +483,20 @@ function normalizeExtractionResponse(response) {
     images,
     videos,
   };
+}
+
+function applyExtractionResponse(extracted) {
+  state.images = Array.isArray(extracted?.images)
+    ? extracted.images.map((item) => ({ ...item, selected: false }))
+    : [];
+  state.videos = Array.isArray(extracted?.videos)
+    ? extracted.videos.map((item) => ({ ...item, selected: false }))
+    : [];
+  state.media = [...state.images, ...state.videos];
+}
+
+function syncMergedMediaState() {
+  state.media = [...(Array.isArray(state.images) ? state.images : []), ...(Array.isArray(state.videos) ? state.videos : [])];
 }
 
 function countMediaTypes(media) {
@@ -516,7 +547,7 @@ async function extractFromCurrentTab() {
       tabId: tab.id,
       tabUrl: tab.url || "",
       version: "0.2.1",
-      contentBuildHash: "1152",
+      contentBuildHash: "1153",
       extractionRange,
     });
 
@@ -530,10 +561,7 @@ async function extractFromCurrentTab() {
       }
 
       const extracted = normalizeExtractionResponse(response.response || response);
-      state.media = extracted.media.map((item) => ({
-        ...item,
-        selected: false,
-      }));
+      applyExtractionResponse(extracted);
       const previousProjectName = state.projectName || "";
       state.projectName = extracted.projectName || "ProjectsA";
       state.metadata = extracted.metadata || null;
@@ -542,7 +570,7 @@ async function extractFromCurrentTab() {
       debug.client = {
         ...responseClient,
         version: "0.2.1",
-        contentBuildHash: "1152",
+        contentBuildHash: "1153",
         probeError: responseClient.probeError || "",
         instagramSamplingError: responseClient.instagramSamplingError || "",
         weiboSamplingError: responseClient.weiboSamplingError || "",
@@ -596,17 +624,14 @@ async function extractFromCurrentTab() {
       }
 
       const extracted = normalizeExtractionResponse(response.response || response);
-      state.media = extracted.media.map((item) => ({
-        ...item,
-        selected: false,
-      }));
+      applyExtractionResponse(extracted);
       const previousProjectName = state.projectName || "";
       state.projectName = extracted.projectName || "ProjectsA";
       state.metadata = extracted.metadata || null;
       const debug = extracted.debug || {};
       debug.client = {
         version: "0.2.1",
-        contentBuildHash: "1152",
+        contentBuildHash: "1153",
         probeError: "",
         instagramSamplingError: "",
         weiboSamplingError: "",
@@ -743,17 +768,14 @@ async function extractFromCurrentTab() {
     }
 
     const extracted = normalizeExtractionResponse(response.response || response);
-    state.media = extracted.media.map((item) => ({
-      ...item,
-      selected: false,
-    }));
+    applyExtractionResponse(extracted);
     const previousProjectName = state.projectName || "";
     state.projectName = extracted.projectName || "ProjectsA";
     state.metadata = extracted.metadata || null;
     const debug = extracted.debug || {};
     debug.client = {
       version: "0.2.1",
-      contentBuildHash: "1152",
+      contentBuildHash: "1153",
       probeError,
       instagramSamplingError,
       weiboSamplingError,
@@ -785,6 +807,8 @@ async function extractFromCurrentTab() {
     setStatus(renderMediaStatusText(state.media));
     render();
   } catch (error) {
+    state.images = [];
+    state.videos = [];
     state.media = [];
     renderDebugInfo({
       phase: "error",
@@ -1380,9 +1404,13 @@ async function saveSelectedToLineage() {
 
 async function saveOriginalToLineage() {
   const originals = getVisibleImages().filter((item) => item.isOriginal);
-  state.media.forEach((item) => {
+  state.images.forEach((item) => {
     item.selected = !!item.isOriginal;
   });
+  state.videos.forEach((item) => {
+    item.selected = false;
+  });
+  syncMergedMediaState();
   render();
   await saveImagesToLineage(originals);
 }
@@ -1440,9 +1468,13 @@ async function saveSelectedToEagle() {
 
 async function saveOriginalToEagle() {
   const originals = getVisibleImages().filter((item) => item.isOriginal);
-  state.media.forEach((item) => {
+  state.images.forEach((item) => {
     item.selected = !!item.isOriginal;
   });
+  state.videos.forEach((item) => {
+    item.selected = false;
+  });
+  syncMergedMediaState();
   render();
   await saveImagesToEagle(originals);
 }
@@ -1558,7 +1590,7 @@ async function downloadFetchedBlob(url, filename) {
   });
 
   if (!response.ok) {
-    throw new Error(`Image request failed: ${response.status}`);
+    throw new Error(`Media request failed: ${response.status}`);
   }
 
   const contentType = String(response.headers.get("content-type") || "").toLowerCase();
@@ -1568,7 +1600,7 @@ async function downloadFetchedBlob(url, filename) {
 
   const blob = await response.blob();
   if (!blob.size) {
-    throw new Error("Image response was empty.");
+    throw new Error("Media response was empty.");
   }
 
   const objectUrl = URL.createObjectURL(blob);
@@ -2127,7 +2159,7 @@ async function probeLineageConnection() {
   setLineageStatus("Running Lineage probe...", false);
   const settings = await getLineageSettings();
   const probe = {
-    contentBuildHash: "1152",
+    contentBuildHash: "1153",
     featureEnabled: lineageFeatureEnabled,
     baseUrl: settings.baseUrl,
     tokenPresent: !!settings.token,

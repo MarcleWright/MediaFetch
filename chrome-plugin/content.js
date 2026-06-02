@@ -1,5 +1,5 @@
 (() => {
-const CONTENT_BUILD_HASH = "1152";
+const CONTENT_BUILD_HASH = "1153";
   const XIAOHONGSHU_DISPLAY_NAME = "\u5c0f\u7ea2\u4e66";
   const XIAOHONGSHU_SUFFIX_PATTERN = /\s*[|\-]\s*(?:\u5c0f\u7ea2\u4e66|Xiaohongshu)\b.*$/i;
   const XIAOHONGSHU_TITLE_PATTERN = /^(.{1,80}?)\s*(?:\u7684|on)\s*(?:\u5c0f\u7ea2\u4e66|Xiaohongshu)/i;
@@ -383,7 +383,7 @@ const CONTENT_BUILD_HASH = "1152";
       : { images: [], debug: {} };
 
     const videoResult = includeVideos
-      ? await collectGenericVideoMedia()
+      ? await extractVideosForPage()
       : createEmptyVideoMediaResult();
 
     const imageMedia = convertImageItemsToMedia(imageResult.images || []);
@@ -451,7 +451,24 @@ const CONTENT_BUILD_HASH = "1152";
       : { images: 0, videos: 0 };
   }
 
-  async function collectGenericVideoMedia() {
+  async function extractVideosForPage() {
+    const host = location.hostname || "";
+    const domainRule = getVideoDomainRule(host);
+    if (typeof domainRule === "function") {
+      const domainResult = await domainRule({
+        extractionRange: "videos",
+        location,
+        document,
+      });
+      if (domainResult) {
+        return domainResult;
+      }
+    }
+
+    return await extractGenericVideos();
+  }
+
+  async function extractGenericVideos() {
     const media = [];
     const seen = new Set();
     const debug = {
@@ -628,6 +645,10 @@ const CONTENT_BUILD_HASH = "1152";
         rejectedPreview: [],
       },
     };
+  }
+
+  function getVideoDomainRule(_host) {
+    return null;
   }
 
   function normalizeExtractionRange(value) {

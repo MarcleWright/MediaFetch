@@ -496,7 +496,7 @@ async function extractInstagramInBackground({ sourceUrl, sourceTabIndex = null, 
     response.debug.client = {
       ...(response.debug.client || {}),
       version: "0.2.1",
-      contentBuildHash: "1152",
+      contentBuildHash: "1153",
       probeError,
       instagramSamplingError,
       weiboSamplingError,
@@ -1806,7 +1806,7 @@ async function fetchImageAsDataUrl(url, filename) {
     cache: "no-store",
   });
   if (!response.ok) {
-    throw new Error(`Image request failed: ${response.status}`);
+    throw new Error(`Media request failed: ${response.status}`);
   }
 
   const contentType = String(response.headers.get("content-type") || "").toLowerCase();
@@ -1816,7 +1816,7 @@ async function fetchImageAsDataUrl(url, filename) {
 
   const bytes = new Uint8Array(await response.arrayBuffer());
   if (!bytes.length) {
-    throw new Error("Image response was empty.");
+    throw new Error("Media response was empty.");
   }
 
   const mimeType = contentType.startsWith("image/") ? contentType : inferMimeTypeFromFilename(filename);
@@ -1830,7 +1830,7 @@ async function fetchImageAsPngDataUrl(url) {
     cache: "no-store",
   });
   if (!response.ok) {
-    throw new Error(`Image request failed: ${response.status}`);
+    throw new Error(`Media request failed: ${response.status}`);
   }
 
   const contentType = String(response.headers.get("content-type") || "").toLowerCase();
@@ -1840,7 +1840,7 @@ async function fetchImageAsPngDataUrl(url) {
 
   const buffer = await response.arrayBuffer();
   if (!buffer.byteLength) {
-    throw new Error("Image response was empty.");
+    throw new Error("Media response was empty.");
   }
 
   return await convertHeicArrayBufferToPngDataUrl(buffer, contentType);
