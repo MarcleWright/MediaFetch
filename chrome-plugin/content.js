@@ -5702,4 +5702,22 @@ const CONTENT_BUILD_HASH = "1152";
     if (/!(?:[^/?#]*_)?png(?:_|$)/i.test(fullUrl)) return "PNG";
     return "Unknown";
   }
+
+  function isSinaimgUrl(url) {
+    try {
+      const parsed = new URL(url);
+      return /(^|\.)sinaimg\.cn$/i.test(parsed.hostname);
+    } catch {
+      return false;
+    }
+  }
+
+  function isXiaohongshuCdnUrl(url) {
+    try {
+      const parsed = new URL(url);
+      return /(^|\.)xhscdn\.com$/i.test(parsed.hostname) || /(^|\.)snsimg\.cn$/i.test(parsed.hostname);
+    } catch {
+      return false;
+    }
+  }
 })();

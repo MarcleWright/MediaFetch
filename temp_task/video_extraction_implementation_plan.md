@@ -1,315 +1,395 @@
-# MediaFetch Chrome Plugin Video Extraction Implementation Plan
+# MediaFetch Chrome Plugin Media Layer Refactor Plan
 
 ## Purpose
 
-This document defines the implementation plan for adding video extraction to the Chrome plugin in a way that is:
+This document defines the implementation rules for refactoring the Chrome plugin so that:
 
-- parallel to the existing image flow
-- independently switchable at runtime
-- globally useful before site-specific rules are added
-- safe for incremental implementation by a lower-capability agent
+- image extraction remains stable
+- video extraction is added without corrupting image behavior
+- media types are separated at the code layer
+- generic extraction still works when no special-domain rule exists
+- future media types such as audio can be added with the same structure
 
-This is an implementation document, not a brainstorming note.
+This document replaces earlier looser guidance.
 
-The goal is to make the first video version work without destabilizing the current image pipeline.
+The main architectural rule is:
 
-## Final Scope Decisions
+`Different media types must be separated in extraction, rule definition, debug, and strategy selection, and only merged at the final result layer.`
 
-These decisions are fixed for this implementation pass.
+## Fixed Product Decisions
 
-### In Scope
+These decisions are already made and must not be revisited during implementation.
 
-- single-file video extraction only
-- extraction-range toggle:
-  - images only
-  - videos only
+### First Video Version In Scope
+
+- single-file video only
+- extraction range:
+  - images
+  - videos
   - both
-- runtime independence between image and video extraction
-- shared project facts and folder naming
-- shared download queue
-- global video extraction fallback for many sites
-- special per-domain video rules can be added later
+- generic video extraction fallback
+- future support for special-domain video rules
+- shared facts, naming, metadata framework, and download queue
 
-### Out of Scope
+### First Video Version Out of Scope
 
 - HLS
 - DASH
 - live streams
 - audio/video merge
-- companion app integration
-- Eagle video export
-- Lineage video export
+- companion app support
 - blob URL as final downloadable target
-- video transcoding
+- video export to Eagle
+- video export to Lineage
 
-## Key Product Rules
+## Critical Clarification: Generic Extraction Must Always Exist
 
-### Rule 1: Images and Videos Must Be Independently Runnable
+Yes: when no special-domain rule exists, the plugin must still use generic extraction.
 
-The user must be able to choose:
+The plugin must not become “rule-domain only”.
 
-- only image extraction
-- only video extraction
-- both
+That means:
 
-This must affect actual extraction behavior, not just UI filtering.
+- image extraction must keep working on generic sites
+- video extraction must have a generic fallback on generic sites
+- special-domain rules are optional overrides, not mandatory gates
 
-If the user chooses `videos only`, image extraction code should not run unless a shared platform context step is explicitly required.
+The correct resolution order is:
 
-### Rule 2: Shared Facts, Separate Media Pipelines
+1. determine current media type
+2. look for a special-domain rule for that media type
+3. if found, use it
+4. if not found, use the generic extractor for that media type
 
-Project facts are shared:
+This is a hard requirement.
 
-- platform
-- domain
-- project URL
-- normalized URL
-- title
-- author
-- project ID
-- publish time
-- folder name
+## High-Level Architecture
 
-Media extraction is separate:
-
-- image extraction does not depend on video extraction
-- video extraction does not depend on image extraction
-
-### Rule 3: First Version Uses Global Video Rules First
-
-The first version must provide a global video extraction fallback that works on many sites by scanning common HTML patterns.
-
-After that is stable, special domain video rules can be added.
-
-### Rule 4: Existing Image Behavior Must Not Regress
-
-The current image extraction behavior is the baseline.
-
-No video work should:
-
-- change current image ranking
-- change current image download naming
-- change current image external integrations
-- change current image special-domain behavior
-
-## Current Code Reality
-
-The current plugin is image-centric.
-
-Important files:
-
-- [chrome-plugin/content.js](D:/00_Projects_WSY/AI/Codex_Projects/MediaDownloader/chrome-plugin/content.js)
-- [chrome-plugin/background.js](D:/00_Projects_WSY/AI/Codex_Projects/MediaDownloader/chrome-plugin/background.js)
-- [chrome-plugin/popup.js](D:/00_Projects_WSY/AI/Codex_Projects/MediaDownloader/chrome-plugin/popup.js)
-- [chrome-plugin/popup.html](D:/00_Projects_WSY/AI/Codex_Projects/MediaDownloader/chrome-plugin/popup.html)
-- [chrome-plugin/README.md](D:/00_Projects_WSY/AI/Codex_Projects/MediaDownloader/chrome-plugin/README.md)
-
-Image-centric assumptions currently exist in:
-
-- extraction response shape returning `images`
-- popup state using `state.images`
-- image-only status text
-- image-only download flow
-- image-only selection helpers like `Select Original`
-- image-only metadata counts such as `imageCount` and `originalCount`
-
-## Target Architecture
-
-The architecture for this phase is:
+The codebase must move toward this structure logically, even if files are not physically split immediately:
 
 ```text
-Page DOM / URL
-  -> Shared Facts Extraction
-  -> Extraction Range Decision
-  -> Platform Context Sampling (optional)
-  -> Image Extraction
-  -> Video Extraction
-  -> Unified Media Result
-  -> Popup Selection / Download
-  -> Shared Download Queue
+shared/
+  facts
+  naming
+  metadata
+  merge
+  queue
+
+media/
+  image/
+    generic
+    domains
+    debug
+    strategy
+  video/
+    generic
+    domains
+    debug
+    strategy
+  audio/
+    generic
+    domains
+    debug
+    strategy
 ```
 
-Important constraint:
+For the current task:
 
-- images and videos are separate media pipelines
-- but they are returned in one unified result structure
+- `image` must be preserved and cleaned up
+- `video` must be added
+- `audio` is not implemented, but the architecture must leave a clear slot for it
 
-## Target Data Model
+## Core Design Rule
 
-### Content Script Response
+Do not design around a mixed extractor like:
 
-The content script must stop returning an image-only payload.
+```js
+collectMedia({ mediaType })
+```
 
-Target shape:
+Do not design domain rules like:
+
+```js
+rule.extract({ mediaType })
+```
+
+Instead, use explicit separation:
+
+```js
+extractSharedFacts()
+extractImages()
+extractVideos()
+mergeMediaResults()
+```
+
+And explicit rule lookup:
+
+```js
+getImageDomainRule(host)
+getVideoDomainRule(host)
+```
+
+This is the key decision that makes future audio support straightforward.
+
+## Shared vs Separated Responsibilities
+
+### Shared Responsibilities
+
+These are allowed to be shared across all media types:
+
+- project facts extraction
+- normalized URL extraction
+- folder name building
+- metadata framework
+- selection of extraction range
+- final result merge
+- final download queue
+- popup-level state shell
+
+### Media-Type-Specific Responsibilities
+
+These must be separated by media type:
+
+- candidate discovery
+- domain rules
+- ranking
+- preferred/original semantics
+- debug evidence
+- download strategy selection
+- preview-card rendering specifics
+
+## Required Result Model
+
+The internal implementation must keep per-media-type arrays separate.
+
+Target merged result shape:
 
 ```js
 {
-  ok: true,
-  pageUrl: "https://example.com/post/123",
-  projectName: "instagram_author_260601_title",
-  metadata: {
-    platform: "instagram",
-    domain: "www.instagram.com",
-    projectUrl: "...",
-    normalizedUrl: "...",
-    projectName: "...",
-    title: "...",
-    username: "...",
-    authorId: "...",
-    projectId: "...",
-    publishedAt: "...",
-    publishedDateCode: "260601",
-    publishedTimeCode: "",
-    imageCount: 4,
-    originalCount: 4,
-    videoCount: 1,
-    counts: {
-      images: 4,
-      videos: 1
-    }
-  },
-  media: [
-    {
-      id: "image:1",
-      mediaType: "image",
-      url: "https://...",
-      thumbnail: "https://...",
-      previewUrl: "https://...",
-      posterUrl: "",
-      format: "JPEG",
-      resolution: "1440 x 1800",
-      size: "Unknown",
-      width: 1440,
-      height: 1800,
-      duration: 0,
-      isOriginal: true,
-      selected: false,
-      download: {
-        strategy: "fetchBlob"
-      }
-    },
-    {
-      id: "video:1",
-      mediaType: "video",
-      url: "https://...",
-      thumbnail: "",
-      previewUrl: "https://...",
-      posterUrl: "https://...",
-      format: "MP4",
-      resolution: "1920 x 1080",
-      size: "Unknown",
-      width: 1920,
-      height: 1080,
-      duration: 32.5,
-      isOriginal: false,
-      selected: false,
-      download: {
-        strategy: "direct"
-      }
-    }
-  ],
+  pageUrl,
+  projectName,
+  facts,
+  metadata,
+  images: [...],
+  videos: [...],
+  media: [...],
   debug: {
-    image: {},
-    video: {},
-    client: {}
+    image: {...},
+    video: {...}
   }
 }
 ```
 
-### Important Notes About This Model
+### Meaning of Each Field
 
-- `media` is the primary collection. Do not add a second top-level `videos` array.
-- `mediaType` must be either `image` or `video`.
-- `isOriginal` remains meaningful only for images in this phase.
-- videos may set `isOriginal` to `false`.
-- `duration` for images should be `0`.
-- `posterUrl` is for video only.
-- `videoCount` must be added.
-- `counts.images` and `counts.videos` must be added for the future-proof schema.
+`images`
+: canonical image result list
+
+`videos`
+: canonical video result list
+
+`media`
+: final merged list for popup rendering and shared download queue
+
+Important rule:
+
+- image logic should consume `images`
+- video logic should consume `videos`
+- only shared UI and queue layers should consume `media`
+
+Do not make `media` the sole source of truth for image behavior.
+
+That mistake is what caused the recent image breakage.
 
 ## Metadata Rules
 
-### Required Metadata Behavior
+Metadata must remain backward-compatible while becoming media-capable.
 
-For backward compatibility, metadata must keep:
+Required fields:
 
-- `imageCount`
-- `originalCount`
+```json
+{
+  "imageCount": 12,
+  "originalCount": 12,
+  "videoCount": 3,
+  "counts": {
+    "images": 12,
+    "videos": 3
+  }
+}
+```
 
-For the new video path, metadata must add:
+Rules:
 
-- `videoCount`
-- `counts.images`
-- `counts.videos`
-
-### Metadata Semantics
-
-- `imageCount` means extracted image item count
-- `originalCount` means extracted image items marked `isOriginal`
-- `videoCount` means extracted video item count
-- `counts.images` duplicates image count in a future-proof location
-- `counts.videos` duplicates video count in a future-proof location
-
-### Do Not Do This
+- keep `imageCount`
+- keep `originalCount` as image-specific
+- add `videoCount`
+- add `counts.images`
+- add `counts.videos`
 
 Do not redefine `originalCount` to include videos.
 
-For this phase, `originalCount` remains image-specific.
+This preserves compatibility and keeps semantics clear.
 
-## Extraction Range Model
+## Extraction Range Rules
 
-### Allowed Values
-
-Use exactly these values:
+Allowed values:
 
 - `images`
 - `videos`
 - `both`
 
-### Behavior
+Behavior:
 
-`images`
-: run facts extraction, optional shared platform sampling, image extraction only
+- `images`: run shared facts + image extraction only
+- `videos`: run shared facts + video extraction only
+- `both`: run shared facts + both extractors
 
-`videos`
-: run facts extraction, optional shared platform sampling, video extraction only
+This is not a display-only filter.
 
-`both`
-: run facts extraction, optional shared platform sampling, image and video extraction
+The extraction range must change actual execution.
 
-### Important Constraint
+## Generic Extractor Rule
 
-This is not just a UI filter.
+Each media type must have a generic extractor.
 
-The selected range must be sent into the extraction pipeline and must determine which collectors execute.
+### Required Generic Extractors
+
+- `extractGenericImages()`
+- `extractGenericVideos()`
+
+Future:
+
+- `extractGenericAudio()`
+
+### Rule Priority
+
+For images:
+
+```text
+special image domain rule -> generic image extractor
+```
+
+For videos:
+
+```text
+special video domain rule -> generic video extractor
+```
+
+This means a domain may have:
+
+- image rule only
+- video rule only
+- both
+- neither
+
+All four cases must work.
+
+## Domain Rule Model
+
+Domain rules must be split by media type.
+
+Correct shape:
+
+```js
+const IMAGE_DOMAIN_RULES = {
+  weibo: weiboImageRule,
+  xiaohongshu: xiaohongshuImageRule,
+};
+
+const VIDEO_DOMAIN_RULES = {
+  weibo: weiboVideoRule,
+  xiaohongshu: xiaohongshuVideoRule,
+};
+```
+
+Wrong shape:
+
+```js
+const DOMAIN_RULES = {
+  weibo: {
+    extract(mediaType) {}
+  }
+};
+```
+
+Reason:
+
+- mixed domain rules will immediately accumulate `if (mediaType === ...)`
+- this makes future audio support much worse
+
+## Current Code Direction That Must Be Corrected
+
+The current implementation work has already started mixing image and video too early in some places.
+
+That must be corrected before further feature work.
+
+### Specifically Avoid
+
+- making image output depend on video refactor helpers
+- using merged `media` as the only internal representation
+- adding image strategy helpers indirectly through video migration
+- forcing image and video through one shared extraction function with branching
+
+## Required Logical Interfaces
+
+These interfaces should exist logically even if the exact function names differ slightly.
+
+### Shared Layer
+
+- `extractSharedFacts()`
+- `buildFolderNameFromFacts(facts)`
+- `buildProjectMetadataFromFacts(facts, summary)`
+- `mergeMediaResults({ images, videos })`
+- `buildMergedDownloadSelection({ images, videos, media })`
+
+### Image Layer
+
+- `extractImagesForPage(context)`
+- `extractGenericImages(context)`
+- `getImageDomainRule(host)`
+- `buildImageDebugInfo(result)`
+- `selectImageDownloadStrategy(item)`
+
+### Video Layer
+
+- `extractVideosForPage(context)`
+- `extractGenericVideos(context)`
+- `getVideoDomainRule(host)`
+- `buildVideoDebugInfo(result)`
+- `selectVideoDownloadStrategy(item)`
+
+### Future Audio Layer
+
+- `extractAudioForPage(context)`
+- `extractGenericAudio(context)`
+- `getAudioDomainRule(host)`
+- `buildAudioDebugInfo(result)`
+- `selectAudioDownloadStrategy(item)`
 
 ## Video Scope Definition
 
-### Supported Global Video Sources
+The first video implementation supports only direct single-file video resources.
 
-The first global video extractor may inspect:
+### Supported Candidate Sources
 
 - `<video src>`
 - `<video><source src>`
-- `data-src`
-- `data-video`
-- `data-video-src`
-- `data-play-url`
-- metadata tags if they point directly to a video file
-- JSON-like attribute values only when they contain direct single-file video URLs
+- common `data-*` direct video URLs
+- metadata tags that point directly to a downloadable video file
 
-### Supported URL Requirements
+### Supported URLs
 
-A video candidate is acceptable only if:
+A video URL is acceptable only if:
 
-- it is an `http` or `https` URL
-- it is not a `blob:` URL
-- it is not a `data:` URL
-- it is not an `m3u8` manifest
-- it is not an `mpd` manifest
-- it looks like a single downloadable media file, or a direct CDN media endpoint
+- it is `http` or `https`
+- it is not `blob:`
+- it is not `data:`
+- it is not `.m3u8`
+- it is not `.mpd`
+- it appears to be a direct single-file media resource
 
-### Unsupported Video Sources
+### Unsupported URLs
 
 Reject:
 
@@ -317,548 +397,278 @@ Reject:
 - `data:...`
 - `.m3u8`
 - `.mpd`
-- obvious ad/tracker video assets
-- tiny loop/background decoration videos when detectable
+- obvious ad/tracker/decoration assets
 
-## Platform Registry Changes
+## Required Implementation Strategy
 
-The current registry already supports platform dispatch.
+Implement in phases. Do not skip the order.
 
-It must evolve from:
-
-```js
-{
-  id,
-  folderPlatform,
-  match,
-  extractFacts,
-  collectMedia
-}
-```
-
-to:
-
-```js
-{
-  id,
-  folderPlatform,
-  match,
-  extractFacts,
-  sampleContext,
-  collectImages,
-  collectVideos
-}
-```
-
-### Registry Method Responsibilities
-
-`extractFacts`
-: shared project facts only
-
-`sampleContext`
-: optional platform-specific sampling data shared by image/video extraction
-
-`collectImages`
-: image-only extraction result
-
-`collectVideos`
-: video-only extraction result
-
-### Default Behavior
-
-If a platform does not define `sampleContext`, use an empty object.
-
-If a platform does not define `collectVideos`, fall back to the global video extractor.
-
-If a platform does not define `collectImages`, use the current image logic only where safe.
-
-## Download Strategy Model
-
-### Allowed Strategies In This Phase
-
-Use exactly:
-
-- `direct`
-- `fetchBlob`
-
-### Strategy Meaning
-
-`direct`
-: use normal Chrome download from URL
-
-`fetchBlob`
-: fetch with page credentials / referer, convert to blob or data URL as needed, then download
-
-### Important Constraints
-
-- do not add stream-specific strategies in this phase
-- do not add merge or transcoding logic
-- do not add companion app assumptions
-
-## UI Behavior Requirements
-
-### Popup State
-
-The popup state must stop being image-only.
-
-Current shape includes:
-
-```js
-state.images
-```
-
-Target shape should be:
-
-```js
-state.media = []
-state.extractionRange = "images"
-```
-
-Optional helper getters may derive:
-
-- visible image items
-- visible video items
-- selected item count
-- selected image count
-- selected video count
-
-### Popup Controls
-
-Add extraction range controls with exactly these choices:
-
-- Images
-- Videos
-- Both
-
-This control belongs near extraction/refresh controls because it changes extraction behavior.
-
-### Existing Buttons
-
-Keep:
-
-- Refresh
-- Select All
-- Clear
-- Download
-
-Adjust behavior:
-
-- `Select All` selects currently visible items
-- `Clear` clears all current selections
-- `Download` downloads all selected visible or hidden items, depending on the final state model
-
-Recommended:
-
-- keep selection state across range view changes only within the current extraction result
-
-### Select Original
-
-For this phase:
-
-- `Select Original` applies only to images
-- when range is `videos`, disable `Select Original`
-- when range is `both`, `Select Original` should select image originals only, not videos
-
-### Status Text
-
-Do not keep image-only text such as:
-
-- `Extracting images...`
-- `Found X image(s).`
-
-Replace with neutral text such as:
-
-- `Extracting media...`
-- `Found 6 item(s): 4 images, 2 videos.`
-
-## Detailed Implementation Phases
-
-Implement in the exact order below.
-
-Do not skip ahead.
-
-### Phase 1: Add Shared Constants and Range Storage
+### Phase 0: Restore Image Isolation
 
 Goal:
 
-- introduce shared extraction-range constants
-- store and restore the extraction-range selection in popup settings
+- stop video migration from breaking images
 
 Tasks:
 
-1. Add range constants in popup and content/background where needed:
+1. Audit current changes that made image output depend on new video-adjacent logic.
+2. Ensure image extraction remains fully functional even if video extraction is disabled or broken.
+3. Ensure image-specific helpers live in the image path or shared-neutral layer, not in a video migration layer.
+4. Keep `images` as a stable canonical output.
+
+Acceptance:
+
+- current image pages extract again
+- image-only path works without touching video extraction
+
+### Phase 1: Formalize Shared Facts and Summary Layer
+
+Goal:
+
+- keep shared logic explicitly media-neutral
+
+Tasks:
+
+1. Keep `collectProjectIdentityFacts()` or equivalent as the shared facts path.
+2. Keep naming shared.
+3. Update metadata builder so it accepts a summary object:
+   - image count
+   - original count
+   - video count
+4. Ensure no image- or video-specific DOM scraping lives inside metadata builders.
+
+Acceptance:
+
+- metadata is built from facts plus summary only
+- facts do not depend on image/video extractors
+
+### Phase 2: Separate Canonical Outputs
+
+Goal:
+
+- make `images` and `videos` distinct canonical outputs
+
+Tasks:
+
+1. Preserve current image extraction result shape as the canonical image output.
+2. Add a separate canonical video output.
+3. Add `mergeMediaResults({ images, videos })` for shared consumers only.
+4. Ensure popup and queue may use `media`, but image-specific logic still uses `images`.
+
+Acceptance:
+
+- `images` and `videos` are both available
+- merged `media` exists as a convenience layer only
+
+### Phase 3: Add Extraction Range Execution
+
+Goal:
+
+- make runtime independence real
+
+Tasks:
+
+1. Add persisted extraction range setting:
    - `images`
    - `videos`
    - `both`
-2. Add popup setting storage key for extraction range.
-3. Add default popup setting:
-   - `extractionRange: "images"`
-4. Render the extraction range control in the popup.
-5. Load and save the setting through `chrome.storage.local`.
+2. Pass the range into the extraction request.
+3. Execute only the requested extractor(s).
 
 Acceptance:
 
-- popup shows extraction range control
-- setting persists across popup reopen
-- no extraction behavior changed yet
+- `videos` mode does not run image extraction
+- `images` mode does not run video extraction
+- `both` runs both
 
-### Phase 2: Change Response Model to Unified `media`
+### Phase 4: Add Generic Video Extractor
 
 Goal:
 
-- stop returning `images` as the primary payload
+- add broad fallback video support without special-domain rules
 
 Tasks:
 
-1. In `content.js`, create a result builder that outputs:
-   - `media`
-   - `metadata`
-   - `debug`
-2. Convert existing image items into media items with:
-   - `mediaType: "image"`
-   - `download.strategy`
-3. Preserve current image ordering and `isOriginal` logic.
-4. Set `videoCount` to `0` for now.
-5. Add `counts.images` and `counts.videos`.
-6. Keep temporary backward compatibility only if absolutely necessary during migration.
+1. Implement `extractGenericVideos(context)`.
+2. Deduplicate normalized video URLs.
+3. Capture poster, duration, width, height when available.
+4. Build video items separate from image items.
+5. Keep debug under a video-specific section.
 
 Acceptance:
 
-- image extraction still works
-- popup can read media items derived from images
-- metadata includes `videoCount: 0`
+- standard HTML5 pages can produce video results
+- generic sites without special-domain rules still work
 
-### Phase 3: Update Popup State to `state.media`
+### Phase 5: Keep Domain Rules Separate
 
 Goal:
 
-- remove image-only popup assumptions
+- prepare for special video rules without mixing them into image rules
 
 Tasks:
 
-1. Replace `state.images` with `state.media`.
-2. Add helpers:
-   - `getAllMediaItems()`
-   - `getVisibleMediaItems()`
-   - `getVisibleImages()`
-   - `getVisibleVideos()`
-3. Update selection counters.
-4. Update `render()` to loop over visible media items.
-5. Keep image cards working.
-6. Add a temporary simple video card rendering branch:
-   - show poster if available
-   - otherwise show a text placeholder
-   - show format, resolution, duration
+1. Refactor platform dispatch so it can locate image and video rules independently.
+2. Keep the current image rules in the image path.
+3. Add empty or placeholder video rule slots where needed.
+4. Use generic video extraction when no video rule exists.
 
 Acceptance:
 
-- images still display correctly
-- popup can render an empty video-capable media list without error
+- a host may have image rule only
+- a host may have video rule only
+- generic fallback still works
 
-### Phase 4: Pass Extraction Range into the Pipeline
+### Phase 6: Adjust Popup State Without Making It Mixed-Rule Driven
 
 Goal:
 
-- make the range selection affect actual extraction
+- support images, videos, and both in UI
 
 Tasks:
 
-1. Include `extractionRange` in popup-to-content or popup-to-background extraction requests.
-2. Update content message handlers to accept it.
-3. Update the extraction entry point so it only runs:
-   - image collector for `images`
-   - video collector for `videos`
-   - both collectors for `both`
-4. Keep shared facts extraction unconditional.
-5. Keep shared platform sampling optional and reusable.
+1. Keep separate internal state access for:
+   - images
+   - videos
+   - merged media
+2. Add range selector.
+3. Render images and videos through separate branches.
+4. `Select Original` remains image-only.
+5. Status text becomes media-neutral.
 
 Acceptance:
 
-- choosing `videos` does not run image collection
-- choosing `images` does not run video collection
-- choosing `both` runs both
+- image rendering still works
+- video rendering works
+- UI state does not assume only images
 
-### Phase 5: Introduce Global Video Extraction
+### Phase 7: Extend Shared Download Queue Safely
 
 Goal:
 
-- return real video candidates on generic websites
+- let shared queue consume merged results without collapsing media-type boundaries
 
 Tasks:
 
-1. Add `collectGenericVideoMedia()` in `content.js`.
-2. Scan:
-   - `video[src]`
-   - `video source[src]`
-   - useful `data-*` attributes
-   - direct video metadata links
-3. Normalize URLs.
-4. Reject unsupported URL types.
-5. Deduplicate by normalized URL.
-6. Build media items:
-   - `mediaType: "video"`
-   - `format`
-   - `resolution`
-   - `width`
-   - `height`
-   - `duration`
-   - `posterUrl`
-   - `download.strategy`
-7. Default strategy:
-   - `direct`, unless a known rule requires `fetchBlob`
+1. Keep image download path stable.
+2. Add video download path for direct single-file videos.
+3. Use shared queue only after per-media-type items are fully prepared.
+4. Keep Eagle and Lineage image-only.
 
 Acceptance:
 
-- on pages with standard HTML5 videos, video items appear
-- image extraction behavior is unchanged
+- image downloads unchanged
+- video downloads work through the queue
+- no video code enters Eagle/Lineage paths
 
-### Phase 6: Wire Download Queue to Mixed Media Items
-
-Goal:
-
-- let the background queue download selected video items
-
-Tasks:
-
-1. Update queue payloads to accept generic `media` items, not image-only items.
-2. Add `mediaType` to download task items.
-3. Reuse existing queue and filename logic.
-4. Reuse current metadata download logic.
-5. Keep Eagle and Lineage branches image-only.
-6. Ensure videos can download through:
-   - `direct`
-   - `fetchBlob`
-
-Acceptance:
-
-- selected image downloads still work
-- selected single-file video downloads work
-- metadata file still downloads
-
-### Phase 7: Add Debug Separation
-
-Goal:
-
-- keep image and video debug evidence distinct
-
-Tasks:
-
-1. Keep existing image debug under `debug.image`.
-2. Add video extraction debug under `debug.video`.
-3. Include:
-   - scanned source counts
-   - accepted URLs
-   - rejected URLs
-   - reject reasons
-4. Keep current debug UI, but feed the new object shape.
-
-Acceptance:
-
-- debug panel still renders JSON
-- video debug is available without polluting image debug
-
-### Phase 8: Prepare Platform Hooks for Future Video Rules
-
-Goal:
-
-- create extension points without forcing all special rules now
-
-Tasks:
-
-1. Refactor current platform registry to support:
-   - `sampleContext`
-   - `collectImages`
-   - `collectVideos`
-2. Provide default no-op `sampleContext`.
-3. Route generic video extraction through the current platform adapter when no custom video collector exists.
-4. Do not implement multiple special video rules in this phase.
-
-Acceptance:
-
-- platform registry supports future video rules
-- no platform-specific video behavior is required yet
-
-## Exact File-Level Guidance
-
-### `chrome-plugin/popup.html`
-
-Required changes:
-
-- add extraction range control
-- replace image-only wording with media-neutral wording where applicable
-
-Do not:
-
-- redesign the popup
-- move unrelated sections
-- change Lineage/Eagle layout unless required by media-state migration
-
-### `chrome-plugin/popup.js`
-
-Required changes:
-
-- add extraction range setting
-- migrate `state.images` to `state.media`
-- update extraction request payload
-- update rendering and selection helpers
-- update status text to media-neutral text
-
-Do not:
-
-- rewrite Lineage logic
-- rewrite Eagle logic
-- change current image card visual style unless needed for mixed-media rendering
+## File-Level Guidance
 
 ### `chrome-plugin/content.js`
 
-Required changes:
+Must do:
 
-- support extraction range input
-- return `media`
-- build new metadata counts
-- add global video extractor
-- evolve platform registry shape
+- keep shared facts extraction
+- keep image extraction stable
+- add separate video extractor
+- add generic video fallback
+- return `images`, `videos`, and merged `media`
 
-Do not:
+Must not do:
 
-- rewrite existing image ranking unless required for migration
-- add m3u8 logic
-- add mpd logic
+- replace image canonical output with merged media only
+- create mixed image/video domain rule functions
+- add HLS or DASH logic
+
+### `chrome-plugin/popup.js`
+
+Must do:
+
+- add extraction range selection
+- keep image and video result access logically separate
+- use merged media only for final rendering convenience
+
+Must not do:
+
+- force all selection logic to treat image/video exactly the same
+- make `Select Original` apply to video
 
 ### `chrome-plugin/background.js`
 
-Required changes:
+Must do:
 
-- accept generic media items in queue payloads
-- download videos using existing queue mechanics
-- use `mediaType` and `download.strategy`
+- keep image queue path stable
+- add video queue support for direct single-file assets
+- keep integrations image-only
 
-Do not:
+Must not do:
 
-- add Eagle video import
-- add Lineage video import
-- add stream-processing helpers
+- add stream-processing logic
+- add video export logic for Eagle/Lineage
 
-## Suggested Helper Functions
+## Suggested Naming
 
-These are suggested names. They may be adjusted slightly, but keep naming clear and literal.
+Use clear names.
 
-### In `content.js`
+Recommended:
 
-- `extractMediaFromPage(extractionRange, maxIndexHint, externalSampledUrls, externalSampledIndexes)`
-- `collectImageMedia(...)`
-- `collectVideoMedia(...)`
-- `collectGenericVideoMedia()`
-- `createMediaItemFromImageItem(imageItem)`
-- `createVideoMediaItem(candidate)`
-- `inferVideoFormat(url, contentType)`
-- `isSupportedSingleFileVideoUrl(url)`
-- `isManifestVideoUrl(url)`
-- `getVideoAttributeUrls(video)`
-- `buildMediaMetadataFromFacts(facts, media)`
+- `extractImagesFromPage()`
+- `extractVideosFromPage()`
+- `extractGenericVideos()`
+- `getImageDomainRule()`
+- `getVideoDomainRule()`
+- `mergeMediaResults()`
+- `countExtractedMedia()`
 
-### In `popup.js`
+Avoid vague mixed names such as:
 
-- `getVisibleMediaItems()`
-- `getVisibleImages()`
-- `getVisibleVideos()`
-- `getSelectedMediaItems()`
-- `getExtractionRangeSetting()`
-- `saveExtractionRangeSetting()`
-- `renderVideoCard(item, index)`
+- `collectMedia()`
+- `extractByType()`
+- `domainRule.extract(mediaType)`
 
-### In `background.js`
-
-- `downloadMediaBatch(mediaItems, options)`
-- `executeMediaDownloadStrategy(item, filename, context)`
-- `fetchVideoAsBlobUrl(url, options)`
-
-## Global Video Extraction Heuristics
-
-Use conservative heuristics.
+## Generic Video Heuristics
 
 ### Positive Signals
 
-- URL path ends with common video extensions:
-  - `.mp4`
-  - `.webm`
-  - `.mov`
-  - `.m4v`
-- content type indicates video
-- candidate is attached to visible `<video>` element
-- candidate has meaningful width/height
-- candidate has meaningful duration
+- `.mp4`
+- `.webm`
+- `.mov`
+- `.m4v`
+- visible video element
+- known video dimensions
+- known duration
 
 ### Negative Signals
 
-- `blob:` URL
-- `data:` URL
+- `blob:`
+- `data:`
 - `.m3u8`
 - `.mpd`
-- ad/tracker host patterns
-- width and height both zero with no supporting metadata
-- tiny loop/background elements when obviously decorative
+- tiny decorative videos
+- obvious ad/tracker URLs
 
-### Deduplication
+## Future Audio Compatibility Rules
 
-Deduplicate by normalized final URL.
+The current refactor must keep future audio support easy.
 
-If the same video URL is found through multiple sources:
+To preserve that:
 
-- prefer the candidate with better dimensions
-- prefer the candidate with a poster URL
-- prefer the candidate with known duration
+1. never make shared layer image- or video-specific
+2. never define domain rules with `if (mediaType === ...)`
+3. never make merged `media` the only canonical source
+4. keep counts extensible
+5. treat “preferred/original/best quality” as media-type-specific semantics
 
-## Acceptance Tests
+If this is done correctly, future audio work should mostly require:
 
-Run these checks after each relevant phase.
+- `audio` generic extractor
+- `audio` domain rules
+- `audioCount`
+- audio card rendering
+- audio-specific download strategy selection
 
-### Baseline Image Regression Checks
+without rewriting the architecture.
 
-Test at least:
-
-- Instagram image post
-- Instagram carousel
-- Behance project
-- Xiaohongshu image note
-- Weibo image post
-
-Expected:
-
-- current image extraction still works
-- current image download still works
-- folder naming unchanged
-
-### Generic Video Checks
-
-Test at least:
-
-- a plain HTML page with `<video src="...mp4">`
-- a page with `<video><source src="...mp4"></video>`
-- a page with multiple videos
-- a page containing unsupported `m3u8` only
-
-Expected:
-
-- direct single-file videos are detected
-- unsupported manifest-only videos are ignored
-- `videos only` mode returns no images
-- `images only` mode returns no videos
-
-### Mixed Media Checks
-
-Test at least:
-
-- a page containing both images and videos
-
-Expected:
-
-- `images` mode extracts only images
-- `videos` mode extracts only videos
-- `both` mode extracts both
-- selection and download work for mixed results
-
-## Verification Commands
+## Verification
 
 At minimum run:
 
@@ -869,39 +679,39 @@ node --check chrome-plugin\background.js
 git diff --check
 ```
 
-If a local test page is added for video extraction, document it and keep it minimal.
+Test at least:
 
-## Rollout Guidance for a Lower-Capability Agent
+- image-only domain with current rules
+- generic site with images
+- generic site with direct HTML5 video
+- mixed page with both image and video
+- `images` extraction range
+- `videos` extraction range
+- `both` extraction range
 
-The implementing agent must follow these rules:
+## Rules for the Implementing Agent
 
-1. Do not attempt to add HLS or DASH support.
-2. Do not redesign the popup.
-3. Do not change Eagle or Lineage behavior except to keep them image-only.
-4. Do not rename metadata fields without keeping backward compatibility.
-5. Do not replace current image extraction logic with a generic rewrite.
-6. Do not refactor unrelated code while doing the migration.
-7. Complete one phase at a time and verify before moving on.
+The implementing agent must follow these rules strictly:
 
-## Explicit Non-Goals for This Task
+1. Do not redesign the plugin.
+2. Do not remove current image behavior first and “rebuild it later”.
+3. Do not introduce media-type branching inside one domain rule.
+4. Do not add HLS/DASH workarounds.
+5. Do not make special-domain rules mandatory for generic extraction.
+6. Do not change Eagle/Lineage beyond preserving image-only behavior.
+7. Do not use merged `media` as the only internal truth for images.
+8. Complete and verify one phase before moving to the next.
 
-These are not bugs during this task unless they break the scoped feature:
+## Final Acceptance Conditions
 
-- unsupported stream-only sites returning no videos
-- blob-only players returning no videos
-- no video thumbnail on some generic pages
-- no video duration on some generic pages
-- no special video rules yet for Instagram, Weibo, Xiaohongshu, or Behance
+This task is complete only when all are true:
 
-## Final Deliverable Definition
-
-This task is complete only when all of the following are true:
-
-1. The popup allows choosing `images`, `videos`, or `both`.
-2. The extraction range changes actual extraction behavior.
-3. The content result uses a unified `media` model.
-4. Metadata includes `videoCount` and `counts`.
-5. Generic single-file videos can be extracted and downloaded.
-6. Existing image extraction still works.
-7. Eagle and Lineage remain image-only.
-8. No HLS/DASH logic has been introduced.
+1. Generic extraction still works when no special-domain rule exists.
+2. Image logic and video logic are separated at code level.
+3. Images remain stable when video logic is changed.
+4. `images`, `videos`, and merged `media` are all available.
+5. Extraction range changes actual execution.
+6. Generic direct single-file videos can be extracted.
+7. Metadata includes `videoCount` and `counts`.
+8. Eagle and Lineage remain image-only.
+9. The architecture is ready for a future `audio` layer without mixed media-type rule branching.
