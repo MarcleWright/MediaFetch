@@ -1,5 +1,5 @@
 (() => {
-const CONTENT_BUILD_HASH = "1151";
+const CONTENT_BUILD_HASH = "1155";
   const XIAOHONGSHU_DISPLAY_NAME = "\u5c0f\u7ea2\u4e66";
   const XIAOHONGSHU_SUFFIX_PATTERN = /\s*[|\-]\s*(?:\u5c0f\u7ea2\u4e66|Xiaohongshu)\b.*$/i;
   const XIAOHONGSHU_TITLE_PATTERN = /^(.{1,80}?)\s*(?:\u7684|on)\s*(?:\u5c0f\u7ea2\u4e66|Xiaohongshu)/i;
@@ -10,35 +10,45 @@ const CONTENT_BUILD_HASH = "1151";
       folderPlatform: "instagram",
       match: isInstagramHost,
       extractFacts: extractInstagramFacts,
-      collectMedia: collectInstagramOriginalMedia,
+      sampleContext: () => ({}),
+      collectImages: collectInstagramOriginalMedia,
+      collectVideos: null,
     },
     {
       id: "behance",
       folderPlatform: "behance",
       match: isBehanceHost,
       extractFacts: extractBehanceFacts,
-      collectMedia: collectBehanceOriginalMedia,
+      sampleContext: () => ({}),
+      collectImages: collectBehanceOriginalMedia,
+      collectVideos: null,
     },
     {
       id: "xiaohongshu",
       folderPlatform: XIAOHONGSHU_DISPLAY_NAME,
       match: isXiaohongshuHost,
       extractFacts: extractXiaohongshuFacts,
-      collectMedia: collectXiaohongshuOriginalMedia,
+      sampleContext: () => ({}),
+      collectImages: collectXiaohongshuOriginalMedia,
+      collectVideos: null,
     },
     {
       id: "weibo",
       folderPlatform: "weibo",
       match: isWeiboHost,
       extractFacts: extractWeiboFacts,
-      collectMedia: collectWeiboOriginalMedia,
+      sampleContext: () => ({}),
+      collectImages: collectWeiboOriginalMedia,
+      collectVideos: null,
     },
     {
       id: "weixin",
       folderPlatform: "weixin",
       match: isWeixinHost,
       extractFacts: extractWeixinFacts,
-      collectMedia: collectWeixinOriginalMedia,
+      sampleContext: () => ({}),
+      collectImages: collectWeixinOriginalMedia,
+      collectVideos: null,
     },
   ];
 
@@ -114,14 +124,31 @@ const CONTENT_BUILD_HASH = "1151";
           return;
         }
 
-        const result = await extractImagesFromPage(message?.maxIndexHint || 0, message?.sampledUrls || [], message?.sampledIndexes || []);
+        const result = await extractMediaFromPage(
+          String(message?.extractionRange || "images"),
+          message?.maxIndexHint || 0,
+          message?.sampledUrls || [],
+          message?.sampledIndexes || []
+        );
         const facts = collectProjectIdentityFacts();
+        const metadata = {
+          ...buildProjectMetadataFromFacts(facts),
+          imageCount: Number(result.imageCount || 0),
+          originalCount: Number(result.originalCount || 0),
+          videoCount: Number(result.videoCount || 0),
+          counts: result.counts || {
+            images: Number(result.imageCount || 0),
+            videos: Number(result.videoCount || 0),
+          },
+        };
         sendResponse({
           ok: true,
           pageUrl: location.href,
           projectName: buildFolderNameFromFacts(facts),
-          metadata: buildProjectMetadataFromFacts(facts),
+          metadata,
+          media: result.media,
           images: result.images,
+          videos: result.videos,
           debug: result.debug,
         });
       } catch (error) {
@@ -135,7 +162,20 @@ const CONTENT_BUILD_HASH = "1151";
     return true;
   });
 
-  async function extractImagesFromPage(maxIndexHint = 0, externalSampledUrls = [], externalSampledIndexes = []) {
+  async function extractImagesForPage(maxIndexHint = 0, externalSampledUrls = [], externalSampledIndexes = []) {
+    const host = location.hostname || "";
+    const domainRule = getImageDomainRule(host);
+    if (typeof domainRule === "function") {
+      const domainResult = await domainRule(maxIndexHint, externalSampledUrls, externalSampledIndexes);
+      if (domainResult) {
+        return domainResult;
+      }
+    }
+
+    return await extractGenericImages(maxIndexHint, externalSampledUrls, externalSampledIndexes);
+  }
+
+  async function extractDomainImages(maxIndexHint = 0, externalSampledUrls = [], externalSampledIndexes = []) {
     const items = [];
     const seen = new Set();
     const seenInstagramMediaItems = new Map();
@@ -344,6 +384,518 @@ const CONTENT_BUILD_HASH = "1151";
       images,
       debug: await buildDebugInfo(images, platformMedia, maxIndexHint),
     };
+  }
+
+  async function extractGenericImages(maxIndexHint = 0, externalSampledUrls = [], externalSampledIndexes = []) {
+    const items = [];
+    const seen = new Set();
+    const debug = {
+      scannedImageElements: 0,
+      scannedSourceCandidates: 0,
+      scannedMetaCandidates: 0,
+      acceptedCount: 0,
+      rejectedCount: 0,
+      acceptedPreview: [],
+      rejectedPreview: [],
+    };
+
+    const push = (rawUrl, options = {}) => {
+      const url = normalizeUrl(rawUrl);
+      if (!url || seen.has(url)) {
+        return;
+      }
+
+      const width = Number(options.width || 0);
+      const height = Number(options.height || 0);
+      const area = width * height;
+      const sourceHint = options.sourceHint || "generic";
+      const normalizedThumbnail = normalizeUrl(options.thumbnail || "");
+      const score = computeScore(url, sourceHint, width, height);
+
+      items.push({
+        url,
+        thumbnail: normalizedThumbnail || options.thumbnail || url,
+        format: options.format || inferFormat(url),
+        resolution: width && height ? `${width} x ${height}` : "Unknown",
+        size: "Unknown",
+        width,
+        height,
+        area,
+        score,
+        sourceHint,
+      });
+      seen.add(url);
+      debug.acceptedCount += 1;
+      if (debug.acceptedPreview.length < 12) {
+        debug.acceptedPreview.push({
+          url,
+          width,
+          height,
+          score,
+        });
+      }
+    };
+
+    document.querySelectorAll("img").forEach((img) => {
+      debug.scannedImageElements += 1;
+      const renderedThumbnail = normalizeUrl(img.currentSrc || img.src || "");
+      push(img.currentSrc || img.src, {
+        thumbnail: renderedThumbnail,
+        width: img.naturalWidth || img.width || 0,
+        height: img.naturalHeight || img.height || 0,
+        sourceHint: img.currentSrc ? "generic-current" : "generic-direct",
+      });
+
+      const bestSrcset = pickBestSrcsetCandidate(img.getAttribute("srcset") || img.getAttribute("data-srcset") || "");
+      if (bestSrcset) {
+        const srcsetSize = getSrcsetCandidateSize(bestSrcset, img);
+        push(bestSrcset, {
+          thumbnail: renderedThumbnail,
+          width: srcsetSize.width || img.naturalWidth || img.width || 0,
+          height: srcsetSize.height || img.naturalHeight || img.height || 0,
+          sourceHint: "generic-srcset",
+        });
+      }
+
+      getImageAttributeUrls(img).forEach((url) => {
+        debug.scannedSourceCandidates += 1;
+        push(url, {
+          thumbnail: renderedThumbnail,
+          width: img.naturalWidth || img.width || 0,
+          height: img.naturalHeight || img.height || 0,
+          sourceHint: "generic-data",
+        });
+      });
+    });
+
+    document.querySelectorAll('meta[property="og:image"], meta[name="twitter:image"], link[rel="image_src"]').forEach((node) => {
+      debug.scannedMetaCandidates += 1;
+      push(node.getAttribute("content") || node.getAttribute("href") || "", {
+        sourceHint: "generic-meta",
+      });
+    });
+
+    const sorted = items
+      .sort((a, b) => {
+        if (b.score !== a.score) return b.score - a.score;
+        return b.area - a.area;
+      });
+
+    const maxArea = sorted[0]?.area || 0;
+    const images = sorted.map((item) => ({
+      url: item.url,
+      thumbnail: item.thumbnail,
+      format: item.format,
+      resolution: item.resolution,
+      size: item.size,
+      isOriginal: detectOriginal(item, maxArea, null),
+      score: item.score,
+      area: item.area,
+      selected: false,
+    }))
+      .sort((a, b) => {
+        if (Number(b.isOriginal) !== Number(a.isOriginal)) {
+          return Number(b.isOriginal) - Number(a.isOriginal);
+        }
+        if ((b.score || 0) !== (a.score || 0)) {
+          return (b.score || 0) - (a.score || 0);
+        }
+        return (b.area || 0) - (a.area || 0);
+      })
+      .map(({ score, area, ...item }) => item);
+
+    return {
+      images,
+      debug: {
+        ...debug,
+        summary: {
+          imageCount: images.length,
+          originalCount: images.filter((item) => item.isOriginal).length,
+        },
+      },
+    };
+  }
+
+  async function extractMediaFromPage(extractionRange = "images", maxIndexHint = 0, externalSampledUrls = [], externalSampledIndexes = []) {
+    const range = normalizeExtractionRange(extractionRange);
+    const includeImages = range !== "videos";
+    const includeVideos = range !== "images";
+
+    const imageResult = includeImages
+      ? await extractImagesForPage(maxIndexHint, externalSampledUrls, externalSampledIndexes)
+      : { images: [], debug: {} };
+
+    const videoResult = includeVideos
+      ? await extractVideosForPage()
+      : createEmptyVideoMediaResult();
+
+    const imageMedia = convertImageItemsToMedia(imageResult.images || []);
+    const videoMedia = Array.isArray(videoResult.media) ? videoResult.media : [];
+    const media = mergeMediaResults({
+      images: includeImages ? imageMedia : [],
+      videos: includeVideos ? videoMedia : [],
+    });
+
+    const counts = countMediaTypes(media);
+    const imageCount = counts.images;
+    const originalCount = imageMedia.filter((item) => item.isOriginal).length;
+    const videoCount = counts.videos;
+    const debug = {
+      image: imageResult.debug || {},
+      video: videoResult.debug || {},
+    };
+
+    return {
+      media,
+      images: imageMedia,
+      videos: videoMedia,
+      debug,
+      counts,
+      imageCount,
+      originalCount,
+      videoCount,
+    };
+  }
+
+  function convertImageItemsToMedia(images) {
+    return Array.from(images || []).map((item, index) => ({
+      id: `image:${index + 1}`,
+      mediaType: "image",
+      url: item.url,
+      sourceUrl: item.url,
+      thumbnail: item.thumbnail || item.url,
+      previewUrl: item.thumbnail || item.url,
+      posterUrl: "",
+      format: item.format || "Unknown",
+      resolution: item.resolution || "Unknown",
+      size: item.size || "Unknown",
+      width: Number(item.width || 0),
+      height: Number(item.height || 0),
+      duration: 0,
+      isOriginal: !!item.isOriginal,
+      selected: !!item.selected,
+      score: Number(item.score || 0),
+      area: Number(item.area || 0),
+      download: {
+        strategy: isSinaimgUrl(item.url) || isXiaohongshuCdnUrl(item.url) ? "fetchBlob" : "direct",
+      },
+    }));
+  }
+
+  function countMediaTypes(media) {
+    return Array.isArray(media)
+      ? media.reduce((acc, item) => {
+        if (item?.mediaType === "video") {
+          acc.videos += 1;
+        } else {
+          acc.images += 1;
+        }
+        return acc;
+      }, { images: 0, videos: 0 })
+      : { images: 0, videos: 0 };
+  }
+
+  function mergeMediaResults({ images = [], videos = [] } = {}) {
+    return [
+      ...(Array.isArray(images) ? images : []),
+      ...(Array.isArray(videos) ? videos : []),
+    ];
+  }
+
+  async function extractVideosForPage() {
+    const host = location.hostname || "";
+    const domainRule = getVideoDomainRule(host);
+    if (typeof domainRule === "function") {
+      const domainResult = await domainRule({
+        extractionRange: "videos",
+        location,
+        document,
+      });
+      if (domainResult) {
+        return domainResult;
+      }
+    }
+
+    return await extractGenericVideos();
+  }
+
+  function getImageDomainRule(_host) {
+    const normalizedHost = String(_host || "").toLowerCase();
+    const supportedHosts = [
+      /(^|\.)instagram\.com$/i,
+      /(^|\.)behance\.net$/i,
+      /(^|\.)xiaohongshu\.com$/i,
+      /(^|\.)weibo\.com$/i,
+      /(^|\.)weixin\.qq\.com$/i,
+    ];
+    if (!supportedHosts.some((pattern) => pattern.test(normalizedHost))) {
+      return null;
+    }
+
+    return async (maxIndexHint = 0, externalSampledUrls = [], externalSampledIndexes = []) => {
+      return await extractDomainImages(maxIndexHint, externalSampledUrls, externalSampledIndexes);
+    };
+  }
+
+  async function extractGenericVideos() {
+    const media = [];
+    const seen = new Set();
+    const debug = {
+      scannedVideoElements: 0,
+      scannedSourceElements: 0,
+      scannedAttributeCandidates: 0,
+      acceptedCount: 0,
+      rejectedCount: 0,
+      acceptedPreview: [],
+      rejectedPreview: [],
+    };
+
+    const push = (rawUrl, options = {}) => {
+      const candidate = normalizeVideoCandidate(rawUrl, options);
+      if (!candidate.ok) {
+        debug.rejectedCount += 1;
+        if (candidate.reason && debug.rejectedPreview.length < 12) {
+          debug.rejectedPreview.push({ url: String(rawUrl || ""), reason: candidate.reason });
+        }
+        return;
+      }
+
+      if (seen.has(candidate.url)) {
+        return;
+      }
+
+      seen.add(candidate.url);
+      debug.acceptedCount += 1;
+      if (debug.acceptedPreview.length < 12) {
+        debug.acceptedPreview.push({
+          url: candidate.url,
+          width: candidate.width,
+          height: candidate.height,
+          duration: candidate.duration,
+          format: candidate.format,
+        });
+      }
+      media.push({
+        id: `video:${media.length + 1}`,
+        mediaType: "video",
+        url: candidate.url,
+        sourceUrl: candidate.url,
+        thumbnail: candidate.posterUrl || candidate.previewUrl || candidate.url,
+        previewUrl: candidate.previewUrl || candidate.posterUrl || candidate.url,
+        posterUrl: candidate.posterUrl || "",
+        format: candidate.format,
+        resolution: candidate.width && candidate.height ? `${candidate.width} x ${candidate.height}` : "Unknown",
+        size: "Unknown",
+        width: candidate.width,
+        height: candidate.height,
+        duration: candidate.duration,
+        isOriginal: false,
+        selected: false,
+        score: candidate.score,
+        area: candidate.area,
+        download: {
+          strategy: candidate.strategy,
+        },
+      });
+    };
+
+    document.querySelectorAll("video").forEach((video) => {
+      debug.scannedVideoElements += 1;
+      const poster = normalizeUrl(video.getAttribute("poster") || "");
+      const duration = Number(video.duration || video.getAttribute("data-duration") || 0);
+      const width = Number(video.videoWidth || video.getAttribute("width") || video.clientWidth || 0);
+      const height = Number(video.videoHeight || video.getAttribute("height") || video.clientHeight || 0);
+      const sourceUrls = new Set();
+      [
+        video.currentSrc,
+        video.src,
+        video.getAttribute("data-src"),
+        video.getAttribute("data-video"),
+        video.getAttribute("data-video-src"),
+        video.getAttribute("data-play-url"),
+      ].forEach((value) => {
+        const normalized = normalizeVideoUrl(value || "");
+        if (normalized) {
+          sourceUrls.add(normalized);
+        }
+      });
+
+      video.querySelectorAll("source[src]").forEach((source) => {
+        debug.scannedSourceElements += 1;
+        const normalized = normalizeVideoUrl(source.getAttribute("src") || "");
+        if (normalized) {
+          sourceUrls.add(normalized);
+        }
+      });
+
+      Array.from(video.attributes || []).forEach((attr) => {
+        const values = collectVideoUrlsFromText(String(attr.value || ""));
+        debug.scannedAttributeCandidates += values.length;
+        values.forEach((value) => sourceUrls.add(value));
+      });
+
+      sourceUrls.forEach((url) => push(url, {
+        posterUrl: poster,
+        previewUrl: poster,
+        duration,
+        width,
+        height,
+        strategy: selectVideoDownloadStrategy(url),
+      }));
+    });
+
+    document.querySelectorAll('meta[property*="video"], meta[name*="video"], link[rel*="video"]').forEach((node) => {
+      const value = node.getAttribute("content") || node.getAttribute("href") || "";
+      const normalized = normalizeVideoUrl(value);
+      if (normalized) {
+        push(normalized, {
+          previewUrl: normalizeUrl(node.getAttribute("content") || node.getAttribute("href") || ""),
+          strategy: selectVideoDownloadStrategy(normalized),
+        });
+      }
+    });
+
+    return {
+      media,
+      debug,
+    };
+  }
+
+  function normalizeVideoCandidate(rawUrl, options = {}) {
+    const url = normalizeVideoUrl(rawUrl);
+    if (!url) {
+      return { ok: false, reason: "invalid-url" };
+    }
+
+    if (isManifestVideoUrl(url)) {
+      return { ok: false, reason: "manifest-url" };
+    }
+
+    const hasVideoExtension = /\.(mp4|webm|mov|m4v|ogv)(?:$|[?#])/i.test(url);
+    const hasDimensions = Number(options.width || 0) > 0 && Number(options.height || 0) > 0;
+    const hasDuration = Number(options.duration || 0) > 0;
+    if (!hasVideoExtension && !hasDimensions && !hasDuration) {
+      return { ok: false, reason: "weak-candidate" };
+    }
+
+    const format = inferVideoFormat(url, options.contentType);
+    const width = Number(options.width || 0);
+    const height = Number(options.height || 0);
+    const duration = Number(options.duration || 0);
+    const posterUrl = normalizeUrl(options.posterUrl || "");
+    const previewUrl = normalizeUrl(options.previewUrl || "");
+    const strategy = options.strategy || selectVideoDownloadStrategy(url);
+
+    return {
+      ok: true,
+      url,
+      format,
+      width,
+      height,
+      duration,
+      posterUrl,
+      previewUrl,
+      strategy,
+      score: computeVideoScore(url, width, height, duration),
+      area: width * height,
+    };
+  }
+
+  function createEmptyVideoMediaResult() {
+    return {
+      media: [],
+      debug: {
+        scannedVideoElements: 0,
+        scannedSourceElements: 0,
+        scannedAttributeCandidates: 0,
+        acceptedCount: 0,
+        rejectedCount: 0,
+        acceptedPreview: [],
+        rejectedPreview: [],
+      },
+    };
+  }
+
+  function getVideoDomainRule(_host) {
+    return null;
+  }
+
+  function normalizeExtractionRange(value) {
+    const normalized = String(value || "images").toLowerCase();
+    if (normalized === "videos" || normalized === "both") {
+      return normalized;
+    }
+    return "images";
+  }
+
+  function normalizeVideoUrl(rawUrl) {
+    const normalized = normalizeUrl(rawUrl);
+    if (!normalized) {
+      return "";
+    }
+
+    if (/^(?:blob:|data:)/i.test(normalized)) {
+      return "";
+    }
+
+    return normalized;
+  }
+
+  function isManifestVideoUrl(url) {
+    return /\.m3u8(?:$|[?#])/i.test(String(url || "")) || /\.mpd(?:$|[?#])/i.test(String(url || ""));
+  }
+
+  function collectVideoUrlsFromText(value) {
+    const text = String(value || "");
+    if (!text) {
+      return [];
+    }
+
+    const urls = [];
+    const matches = text.match(/https?:\/\/[^"'`\s<>]+?(?:\.mp4|\.webm|\.mov|\.m4v|\.ogv|\.m3u8|\.mpd)(?:[?#][^"'`\s<>]*)?/gi) || [];
+    matches.forEach((match) => {
+      const normalized = normalizeVideoUrl(match);
+      if (normalized) {
+        urls.push(normalized);
+      }
+    });
+    return urls;
+  }
+
+  function inferVideoFormat(url, contentType = "") {
+    const lowered = String(url || "").toLowerCase();
+    const ct = String(contentType || "").toLowerCase();
+    if (ct.includes("mp4")) return "MP4";
+    if (ct.includes("webm")) return "WEBM";
+    if (ct.includes("quicktime")) return "MOV";
+    if (ct.includes("mpegurl")) return "M3U8";
+    if (lowered.endsWith(".mp4")) return "MP4";
+    if (lowered.endsWith(".webm")) return "WEBM";
+    if (lowered.endsWith(".mov")) return "MOV";
+    if (lowered.endsWith(".m4v")) return "M4V";
+    return "Unknown";
+  }
+
+  function computeVideoScore(url, width = 0, height = 0, duration = 0) {
+    let score = 0;
+    if (width > 0 && height > 0) {
+      score += Math.min(500, Math.floor((width * height) / 5000));
+    }
+    if (duration > 0) {
+      score += Math.min(120, Math.floor(duration));
+    }
+    const lowered = String(url || "").toLowerCase();
+    if (/(original|source|high|large|hd|master|raw)/.test(lowered)) {
+      score += 80;
+    }
+    if (/(preview|thumb|poster|small|sprite)/.test(lowered)) {
+      score -= 40;
+    }
+    return score;
+  }
+
+  function selectVideoDownloadStrategy(url) {
+    return isManifestVideoUrl(url) ? "direct" : "direct";
   }
 
   function mergeExternalSampledUrls(domainOriginalUrls, externalUrls) {
@@ -2141,7 +2693,8 @@ const CONTENT_BUILD_HASH = "1151";
   // Platform media collection owns original URL selection; callers consume the uniform result shape.
   async function collectPlatformMedia(maxIndexHint = 0) {
     const adapter = getCurrentPlatformAdapter();
-    return adapter?.collectMedia ? await adapter.collectMedia(maxIndexHint) : createEmptyPlatformMedia();
+    return adapter?.collectImages ? await adapter.collectImages(maxIndexHint) :
+      adapter?.collectMedia ? await adapter.collectMedia(maxIndexHint) : createEmptyPlatformMedia();
   }
 
   function createEmptyPlatformMedia() {
@@ -5338,5 +5891,23 @@ const CONTENT_BUILD_HASH = "1151";
     if (/!(?:[^/?#]*_)?jpg(?:_|$)|!(?:[^/?#]*_)?jpeg(?:_|$)/i.test(fullUrl)) return "JPEG";
     if (/!(?:[^/?#]*_)?png(?:_|$)/i.test(fullUrl)) return "PNG";
     return "Unknown";
+  }
+
+  function isSinaimgUrl(url) {
+    try {
+      const parsed = new URL(url);
+      return /(^|\.)sinaimg\.cn$/i.test(parsed.hostname);
+    } catch {
+      return false;
+    }
+  }
+
+  function isXiaohongshuCdnUrl(url) {
+    try {
+      const parsed = new URL(url);
+      return /(^|\.)xhscdn\.com$/i.test(parsed.hostname) || /(^|\.)snsimg\.cn$/i.test(parsed.hostname);
+    } catch {
+      return false;
+    }
   }
 })();

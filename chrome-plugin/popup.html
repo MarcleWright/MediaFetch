@@ -13,7 +13,7 @@
         <h1>MediaFetch</h1>
         <span class="version">v0.2.1</span>
       </div>
-      <p>Extract images from the current tab using your logged-in browser session.</p>
+      <p>Extract media from the current tab using your logged-in browser session.</p>
     </header>
 
     <section class="toolbar">
@@ -30,6 +30,15 @@
         <button id="clearBtn" type="button" disabled>Clear</button>
         <button id="selectOriginalBtn" type="button" disabled>Select Original</button>
       </div>
+    </section>
+
+    <section class="folderBox">
+      <label for="extractionRange">Extraction Range</label>
+      <select id="extractionRange">
+        <option value="images">Images</option>
+        <option value="videos">Videos</option>
+        <option value="both">Both</option>
+      </select>
     </section>
 
     <section id="settingsView" class="settingsView" hidden>
