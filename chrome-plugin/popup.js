@@ -492,11 +492,18 @@ function applyExtractionResponse(extracted) {
   state.videos = Array.isArray(extracted?.videos)
     ? extracted.videos.map((item) => ({ ...item, selected: false }))
     : [];
-  state.media = [...state.images, ...state.videos];
+  state.media = mergePopupMedia(state.images, state.videos);
 }
 
 function syncMergedMediaState() {
-  state.media = [...(Array.isArray(state.images) ? state.images : []), ...(Array.isArray(state.videos) ? state.videos : [])];
+  state.media = mergePopupMedia(state.images, state.videos);
+}
+
+function mergePopupMedia(images, videos) {
+  return [
+    ...(Array.isArray(images) ? images : []),
+    ...(Array.isArray(videos) ? videos : []),
+  ];
 }
 
 function countMediaTypes(media) {
@@ -547,7 +554,7 @@ async function extractFromCurrentTab() {
       tabId: tab.id,
       tabUrl: tab.url || "",
       version: "0.2.1",
-      contentBuildHash: "1154",
+      contentBuildHash: "1155",
       extractionRange,
     });
 
@@ -570,7 +577,7 @@ async function extractFromCurrentTab() {
       debug.client = {
         ...responseClient,
         version: "0.2.1",
-        contentBuildHash: "1154",
+        contentBuildHash: "1155",
         probeError: responseClient.probeError || "",
         instagramSamplingError: responseClient.instagramSamplingError || "",
         weiboSamplingError: responseClient.weiboSamplingError || "",
@@ -631,7 +638,7 @@ async function extractFromCurrentTab() {
       const debug = extracted.debug || {};
       debug.client = {
         version: "0.2.1",
-        contentBuildHash: "1154",
+        contentBuildHash: "1155",
         probeError: "",
         instagramSamplingError: "",
         weiboSamplingError: "",
@@ -775,7 +782,7 @@ async function extractFromCurrentTab() {
     const debug = extracted.debug || {};
     debug.client = {
       version: "0.2.1",
-      contentBuildHash: "1154",
+      contentBuildHash: "1155",
       probeError,
       instagramSamplingError,
       weiboSamplingError,
@@ -2159,7 +2166,7 @@ async function probeLineageConnection() {
   setLineageStatus("Running Lineage probe...", false);
   const settings = await getLineageSettings();
   const probe = {
-    contentBuildHash: "1154",
+    contentBuildHash: "1155",
     featureEnabled: lineageFeatureEnabled,
     baseUrl: settings.baseUrl,
     tokenPresent: !!settings.token,

@@ -1,5 +1,5 @@
 (() => {
-const CONTENT_BUILD_HASH = "1154";
+const CONTENT_BUILD_HASH = "1155";
   const XIAOHONGSHU_DISPLAY_NAME = "\u5c0f\u7ea2\u4e66";
   const XIAOHONGSHU_SUFFIX_PATTERN = /\s*[|\-]\s*(?:\u5c0f\u7ea2\u4e66|Xiaohongshu)\b.*$/i;
   const XIAOHONGSHU_TITLE_PATTERN = /^(.{1,80}?)\s*(?:\u7684|on)\s*(?:\u5c0f\u7ea2\u4e66|Xiaohongshu)/i;
@@ -175,7 +175,7 @@ const CONTENT_BUILD_HASH = "1154";
     return await extractGenericImages(maxIndexHint, externalSampledUrls, externalSampledIndexes);
   }
 
-  async function extractGenericImages(maxIndexHint = 0, externalSampledUrls = [], externalSampledIndexes = []) {
+  async function extractDomainImages(maxIndexHint = 0, externalSampledUrls = [], externalSampledIndexes = []) {
     const items = [];
     const seen = new Set();
     const seenInstagramMediaItems = new Map();
@@ -386,6 +386,136 @@ const CONTENT_BUILD_HASH = "1154";
     };
   }
 
+  async function extractGenericImages(maxIndexHint = 0, externalSampledUrls = [], externalSampledIndexes = []) {
+    const items = [];
+    const seen = new Set();
+    const debug = {
+      scannedImageElements: 0,
+      scannedSourceCandidates: 0,
+      scannedMetaCandidates: 0,
+      acceptedCount: 0,
+      rejectedCount: 0,
+      acceptedPreview: [],
+      rejectedPreview: [],
+    };
+
+    const push = (rawUrl, options = {}) => {
+      const url = normalizeUrl(rawUrl);
+      if (!url || seen.has(url)) {
+        return;
+      }
+
+      const width = Number(options.width || 0);
+      const height = Number(options.height || 0);
+      const area = width * height;
+      const sourceHint = options.sourceHint || "generic";
+      const normalizedThumbnail = normalizeUrl(options.thumbnail || "");
+      const score = computeScore(url, sourceHint, width, height);
+
+      items.push({
+        url,
+        thumbnail: normalizedThumbnail || options.thumbnail || url,
+        format: options.format || inferFormat(url),
+        resolution: width && height ? `${width} x ${height}` : "Unknown",
+        size: "Unknown",
+        width,
+        height,
+        area,
+        score,
+        sourceHint,
+      });
+      seen.add(url);
+      debug.acceptedCount += 1;
+      if (debug.acceptedPreview.length < 12) {
+        debug.acceptedPreview.push({
+          url,
+          width,
+          height,
+          score,
+        });
+      }
+    };
+
+    document.querySelectorAll("img").forEach((img) => {
+      debug.scannedImageElements += 1;
+      const renderedThumbnail = normalizeUrl(img.currentSrc || img.src || "");
+      push(img.currentSrc || img.src, {
+        thumbnail: renderedThumbnail,
+        width: img.naturalWidth || img.width || 0,
+        height: img.naturalHeight || img.height || 0,
+        sourceHint: img.currentSrc ? "generic-current" : "generic-direct",
+      });
+
+      const bestSrcset = pickBestSrcsetCandidate(img.getAttribute("srcset") || img.getAttribute("data-srcset") || "");
+      if (bestSrcset) {
+        const srcsetSize = getSrcsetCandidateSize(bestSrcset, img);
+        push(bestSrcset, {
+          thumbnail: renderedThumbnail,
+          width: srcsetSize.width || img.naturalWidth || img.width || 0,
+          height: srcsetSize.height || img.naturalHeight || img.height || 0,
+          sourceHint: "generic-srcset",
+        });
+      }
+
+      getImageAttributeUrls(img).forEach((url) => {
+        debug.scannedSourceCandidates += 1;
+        push(url, {
+          thumbnail: renderedThumbnail,
+          width: img.naturalWidth || img.width || 0,
+          height: img.naturalHeight || img.height || 0,
+          sourceHint: "generic-data",
+        });
+      });
+    });
+
+    document.querySelectorAll('meta[property="og:image"], meta[name="twitter:image"], link[rel="image_src"]').forEach((node) => {
+      debug.scannedMetaCandidates += 1;
+      push(node.getAttribute("content") || node.getAttribute("href") || "", {
+        sourceHint: "generic-meta",
+      });
+    });
+
+    const sorted = items
+      .sort((a, b) => {
+        if (b.score !== a.score) return b.score - a.score;
+        return b.area - a.area;
+      });
+
+    const maxArea = sorted[0]?.area || 0;
+    const images = sorted.map((item) => ({
+      url: item.url,
+      thumbnail: item.thumbnail,
+      format: item.format,
+      resolution: item.resolution,
+      size: item.size,
+      isOriginal: detectOriginal(item, maxArea, null),
+      score: item.score,
+      area: item.area,
+      selected: false,
+    }))
+      .sort((a, b) => {
+        if (Number(b.isOriginal) !== Number(a.isOriginal)) {
+          return Number(b.isOriginal) - Number(a.isOriginal);
+        }
+        if ((b.score || 0) !== (a.score || 0)) {
+          return (b.score || 0) - (a.score || 0);
+        }
+        return (b.area || 0) - (a.area || 0);
+      })
+      .map(({ score, area, ...item }) => item);
+
+    return {
+      images,
+      debug: {
+        ...debug,
+        summary: {
+          imageCount: images.length,
+          originalCount: images.filter((item) => item.isOriginal).length,
+        },
+      },
+    };
+  }
+
   async function extractMediaFromPage(extractionRange = "images", maxIndexHint = 0, externalSampledUrls = [], externalSampledIndexes = []) {
     const range = normalizeExtractionRange(extractionRange);
     const includeImages = range !== "videos";
@@ -503,7 +633,7 @@ const CONTENT_BUILD_HASH = "1154";
     }
 
     return async (maxIndexHint = 0, externalSampledUrls = [], externalSampledIndexes = []) => {
-      return await extractGenericImages(maxIndexHint, externalSampledUrls, externalSampledIndexes);
+      return await extractDomainImages(maxIndexHint, externalSampledUrls, externalSampledIndexes);
     };
   }
 
