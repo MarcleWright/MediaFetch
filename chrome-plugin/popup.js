@@ -419,6 +419,9 @@ function normalizeMediaItem(item, index = 0) {
   const url = normalizeHttpUrl(item?.url || "");
   const sourceUrl = normalizeHttpUrl(item?.sourceUrl || item?.url || "");
   const downloadStrategy = String(item?.download?.strategy || (mediaType === "video" ? "direct" : "fetchBlob"));
+  const width = Number(item?.width || 0);
+  const height = Number(item?.height || 0);
+  const resolution = item?.resolution || (mediaType === "video" && width > 0 && height > 0 ? `${width} x ${height}` : "Unknown");
   return {
     id: String(item?.id || `${mediaType}:${index + 1}`),
     mediaType,
@@ -428,10 +431,10 @@ function normalizeMediaItem(item, index = 0) {
     previewUrl: normalizeHttpUrl(item?.previewUrl || "") || item?.previewUrl || url,
     posterUrl: normalizeHttpUrl(item?.posterUrl || "") || item?.posterUrl || "",
     format: item?.format || "Unknown",
-    resolution: item?.resolution || "Unknown",
+    resolution,
     size: item?.size || "Unknown",
-    width: Number(item?.width || 0),
-    height: Number(item?.height || 0),
+    width,
+    height,
     duration: Number(item?.duration || 0),
     isOriginal: !!item?.isOriginal,
     selected: !!item?.selected,
@@ -2709,9 +2712,6 @@ function render() {
     meta.appendChild(createPill(item.format || "Unknown"));
     meta.appendChild(createPill(item.resolution || "Unknown"));
     meta.appendChild(createPill(item.size || "Unknown"));
-    if (item.mediaType === "video") {
-      meta.appendChild(createPill(item.duration ? `${Math.round(item.duration)}s` : "Unknown"));
-    }
     card.appendChild(meta);
 
     card.addEventListener("click", () => {

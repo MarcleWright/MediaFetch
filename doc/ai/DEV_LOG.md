@@ -1,5 +1,68 @@
 # Dev Log
 
+### 2026-06-05 Xiaohongshu Video Cover Task Completed
+
+Status: Done
+
+Summary:
+
+- added a Xiaohongshu video special-domain helper that maps `note.video.image.thumbnailFileid` to a verified `https://ci.xiaohongshu.com/<fileId>` cover URL
+- kept the structured cover path inside the Xiaohongshu video rule and preserved existing poster fallbacks when the structured field is missing or unusable
+- validated the mapping against multiple real Xiaohongshu video samples before marking the task complete
+
+Links:
+
+- `doc/ai/tasks/2026-06-05_05_xiaohongshu-video-cover-thumbnail.md`
+- `chrome-plugin/content.js`
+
+### 2026-06-05 Xiaohongshu Video Cover Task Created
+
+Status: Planned
+
+Summary:
+
+- recorded that Xiaohongshu video posts expose a structured cover file id at `note.video.image.thumbnailFileid`
+- created the execution task for turning that structured file id into a stable video cover URL
+- kept this work separated from the existing video max-stream task
+
+Links:
+
+- `doc/ai/tasks/2026-06-05_05_xiaohongshu-video-cover-thumbnail.md`
+- `doc/architecture/ARCHITECTURE_OVERVIEW.md`
+- `doc/engineering/KNOWN_ISSUES.md`
+
+### 2026-06-05 Xiaohongshu Video Max-Stream Task Completed
+
+Status: Done
+
+Summary:
+
+- switched Xiaohongshu video extraction to parse `mediaV2/stream` before generic fallback
+- ranked all direct MP4 stream variants and exported the maximum-size result
+- made video dimensions explicit in the popup UI
+
+Links:
+
+- `doc/ai/tasks/2026-06-05_04_xiaohongshu-video-max-stream-and-dimensions.md`
+- `chrome-plugin/content.js`
+- `chrome-plugin/popup.js`
+
+### 2026-06-05 Xiaohongshu Video Max-Stream Task Created
+
+Status: Planned
+
+Summary:
+
+- recorded that Xiaohongshu video extraction should prefer `mediaV2/stream` over generic scanning when available
+- recorded that observed samples expose multiple direct MP4 stream variants and the rule should choose the maximum-size one instead of the first one found
+- created the execution task for selecting the maximum-size video stream and showing video dimensions in the plugin UI
+
+Links:
+
+- `doc/ai/tasks/2026-06-05_04_xiaohongshu-video-max-stream-and-dimensions.md`
+- `doc/architecture/ARCHITECTURE_OVERVIEW.md`
+- `doc/engineering/KNOWN_ISSUES.md`
+
 ### 2026-06-05 Xiaohongshu Image Main-Container Priority Completed
 
 Status: Done

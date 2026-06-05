@@ -4469,80 +4469,55 @@ const CONTENT_BUILD_HASH = "1155";
 
   function collectXiaohongshuVideoMedia() {
     const html = document.documentElement?.innerHTML || "";
-    const { candidates, stats } = collectXiaohongshuVideoCandidatesFromHtml(html);
-    const media = [];
-    const seen = new Set();
-    const acceptedPreview = [];
-
-    candidates.forEach((candidate) => {
-      const normalized = normalizeVideoCandidate(candidate.url, {
-        width: candidate.width,
-        height: candidate.height,
-        duration: candidate.duration,
-        strategy: "direct",
-      });
-      if (!normalized.ok || seen.has(normalized.url)) {
-        return;
-      }
-
-      seen.add(normalized.url);
-      if (acceptedPreview.length < 8) {
-        acceptedPreview.push({
-          url: normalized.url,
-          sourceKind: candidate.sourceKind,
-          width: normalized.width,
-          height: normalized.height,
-          duration: normalized.duration,
-          score: candidate.score,
-        });
-      }
-
-      media.push({
-        id: `video:${media.length + 1}`,
-        mediaType: "video",
-        url: normalized.url,
-        sourceUrl: normalized.url,
-        thumbnail: candidate.posterUrl || candidate.previewUrl || normalized.url,
-        previewUrl: candidate.previewUrl || candidate.posterUrl || normalized.url,
-        posterUrl: candidate.posterUrl || "",
-        format: normalized.format,
-        resolution: normalized.width && normalized.height ? `${normalized.width} x ${normalized.height}` : "Unknown",
-        size: "Unknown",
-        width: normalized.width,
-        height: normalized.height,
-        duration: normalized.duration,
-        isOriginal: false,
-        selected: false,
-        score: candidate.score,
-        area: normalized.area,
-        download: {
-          strategy: normalized.strategy,
-        },
-      });
-    });
+    const noteId = extractXiaohongshuNoteId(location.href);
+    const noteDetailMapFound = /"noteDetailMap"\s*:\s*\{/.test(html);
+    const note = extractXiaohongshuNotePayloadFromHtml(html, noteId);
+    const structuredVideo = extractXiaohongshuStructuredVideoPayload(note);
+    const streamRoot = structuredVideo?.streamRoot || null;
+    const candidates = streamRoot ? collectXiaohongshuVideoStreamCandidates(streamRoot) : [];
+    const rankedCandidates = rankXiaohongshuVideoCandidates(candidates);
+    const selectedCandidate = rankedCandidates[0] || null;
+    const media = selectedCandidate ? [buildXiaohongshuVideoMediaItem(selectedCandidate, structuredVideo)] : [];
 
     return {
       media,
       debug: {
         xiaohongshu: {
-          noteId: extractXiaohongshuNoteId(location.href),
+          noteId,
           currentNoteId: extractXiaohongshuCurrentNoteIdFromHtml(html),
-          noteDetailMapFound: /"noteDetailMap"\s*:\s*\{/.test(html),
-          mediaV2Found: /"mediaV2"\s*:\s*"/.test(html),
-          htmlLength: html.length,
-          sourceHits: stats.sourceHits,
+          noteDetailMapFound,
+          mediaV2Found: !!structuredVideo?.mediaV2,
+          structuredSource: structuredVideo?.source || "none",
+          thumbnailFileid: structuredVideo?.thumbnailFileid || "",
+          structuredCoverUrl: structuredVideo?.coverUrl || "",
+          streamRootFound: !!streamRoot,
+          streamFamilyCounts: structuredVideo?.streamFamilyCounts || {},
           candidateCount: candidates.length,
           acceptedCount: media.length,
-          rejectedCount: stats.rejectedCount,
-          candidatePreview: candidates.slice(0, 8).map((candidate) => ({
+          fallbackToGeneric: !selectedCandidate,
+          candidatePreview: rankedCandidates.slice(0, 8).map((candidate) => ({
             url: candidate.url,
-            sourceKind: candidate.sourceKind,
+            streamFamily: candidate.streamFamily,
+            streamType: candidate.streamType,
             width: candidate.width,
             height: candidate.height,
+            bitrate: candidate.bitrate,
+            codec: candidate.codec,
             duration: candidate.duration,
             score: candidate.score,
           })),
-          acceptedPreview,
+          selectedCandidate: selectedCandidate ? {
+            url: selectedCandidate.url,
+            streamFamily: selectedCandidate.streamFamily,
+            streamType: selectedCandidate.streamType,
+            width: selectedCandidate.width,
+            height: selectedCandidate.height,
+            bitrate: selectedCandidate.bitrate,
+            codec: selectedCandidate.codec,
+            duration: selectedCandidate.duration,
+            score: selectedCandidate.score,
+            backupUrlCount: selectedCandidate.backupUrls.length,
+          } : null,
         },
       },
     };
@@ -4552,116 +4527,259 @@ const CONTENT_BUILD_HASH = "1155";
     return collectXiaohongshuVideoMedia().debug?.xiaohongshu || null;
   }
 
-  function collectXiaohongshuVideoCandidatesFromHtml(html) {
-    const candidatesByUrl = new Map();
-    const stats = {
-      rejectedCount: 0,
-      sourceHits: {
-        masterUrl: 0,
-        backupUrl: 0,
-        defaultScreencastStream: 0,
-        master_url: 0,
-        backup_urls: 0,
-      },
+  function extractXiaohongshuNotePayloadFromHtml(html, noteId) {
+    const raw = String(html || "");
+    if (!raw) {
+      return null;
+    }
+
+    const noteChunk = extractXiaohongshuNoteDetailChunkFromHtml(raw, noteId);
+    const noteObjectText = extractXiaohongshuJsonObjectText(noteChunk, '"note":');
+    if (!noteObjectText) {
+      return null;
+    }
+
+    return tryParseJsonLike(noteObjectText);
+  }
+
+  function extractXiaohongshuStructuredVideoPayload(note) {
+    if (!note || typeof note !== "object") {
+      return null;
+    }
+
+    const mediaV2Text = typeof note.mediaV2 === "string"
+      ? note.mediaV2
+      : typeof note.video?.mediaV2 === "string"
+        ? note.video.mediaV2
+        : "";
+
+    const mediaV2 = mediaV2Text ? tryParseJsonLike(mediaV2Text) : null;
+    const streamRoot = mediaV2?.stream || mediaV2?.video?.stream || note.video?.stream || null;
+    const thumbnailFileid = extractXiaohongshuVideoThumbnailFileId(note);
+    const coverUrl = buildXiaohongshuVideoCoverUrl(thumbnailFileid);
+    if (!streamRoot) {
+      return {
+        mediaV2: mediaV2Text ? mediaV2 : null,
+        streamRoot: null,
+        source: mediaV2Text ? "mediaV2" : (note.video?.stream ? "video.stream" : "none"),
+        streamFamilyCounts: {},
+        thumbnailFileid,
+        coverUrl,
+      };
+    }
+
+    return {
+      mediaV2: mediaV2 || null,
+      streamRoot,
+      source: mediaV2?.stream ? "mediaV2.stream" : (mediaV2 ? "mediaV2.video.stream" : "video.stream"),
+      streamFamilyCounts: countXiaohongshuStreamFamilies(streamRoot),
+      thumbnailFileid,
+      coverUrl,
     };
+  }
 
-    const patterns = [
-      { sourceKind: "masterUrl", scoreBoost: 120, pattern: /"masterUrl"\s*:\s*"((?:https?:\\\/\\\/|https?:\/\/)[^"]+?\.mp4(?:\?[^"]*)?)"/gi },
-      { sourceKind: "backupUrl", scoreBoost: 70, pattern: /"backupUrls"\s*:\s*\[\s*"((?:https?:\\\/\\\/|https?:\/\/)[^"]+?\.mp4(?:\?[^"]*)?)"/gi },
-      { sourceKind: "defaultScreencastStream", scoreBoost: 110, pattern: /"default_screencast_stream"\s*:\s*"((?:https?:\\\/\\\/|https?:\/\/)[^"]+?\.mp4(?:\?[^"]*)?)"/gi },
-      { sourceKind: "master_url", scoreBoost: 120, pattern: /"master_url"\s*:\s*"((?:https?:\\\/\\\/|https?:\/\/)[^"]+?\.mp4(?:\?[^"]*)?)"/gi },
-      { sourceKind: "backup_urls", scoreBoost: 70, pattern: /"backup_urls"\s*:\s*\[\s*"((?:https?:\\\/\\\/|https?:\/\/)[^"]+?\.mp4(?:\?[^"]*)?)"/gi },
-    ];
+  function extractXiaohongshuVideoThumbnailFileId(note) {
+    if (!note || typeof note !== "object") {
+      return "";
+    }
 
-    patterns.forEach(({ sourceKind, scoreBoost, pattern }) => {
-      let match;
-      while ((match = pattern.exec(html)) !== null) {
-        stats.sourceHits[sourceKind] += 1;
-        const rawUrl = decodeEscapedUrl(match[1]);
-        const normalizedUrl = normalizeVideoUrl(rawUrl);
-        if (!normalizedUrl) {
-          stats.rejectedCount += 1;
-          continue;
+    const raw = note.video?.image?.thumbnailFileid
+      || note.video?.image?.thumbnail_fileid
+      || note.video?.thumbnailFileid
+      || note.video?.thumbnail_fileid
+      || "";
+    const value = String(raw || "").trim();
+    return /^[a-z0-9_-]+$/i.test(value) ? value : "";
+  }
+
+  function buildXiaohongshuVideoCoverUrl(fileId) {
+    const normalizedFileId = String(fileId || "").trim();
+    if (!/^[a-z0-9_-]+$/i.test(normalizedFileId)) {
+      return "";
+    }
+
+    return `https://ci.xiaohongshu.com/${normalizedFileId}`;
+  }
+
+  function countXiaohongshuStreamFamilies(streamRoot) {
+    const counts = {};
+    ["h264", "h265", "av1", "h266"].forEach((family) => {
+      counts[family] = Array.isArray(streamRoot?.[family]) ? streamRoot[family].length : 0;
+    });
+    return counts;
+  }
+
+  function collectXiaohongshuVideoStreamCandidates(streamRoot) {
+    const candidates = [];
+    const seen = new Set();
+    const families = ["h264", "h265", "av1", "h266"];
+
+    families.forEach((family) => {
+      const entries = Array.isArray(streamRoot?.[family]) ? streamRoot[family] : [];
+      entries.forEach((stream, index) => {
+        const candidate = buildXiaohongshuVideoStreamCandidate(stream, family, index);
+        if (!candidate || seen.has(candidate.url)) {
+          return;
         }
+        seen.add(candidate.url);
+        candidates.push(candidate);
+      });
+    });
 
-        const context = html.slice(
-          Math.max(0, match.index - 420),
-          Math.min(html.length, match.index + match[0].length + 900)
-        );
-        const width = extractXiaohongshuVideoDimension(context, "width");
-        const height = extractXiaohongshuVideoDimension(context, "height");
-        const duration = extractXiaohongshuVideoDuration(context);
-        const normalized = normalizeVideoCandidate(normalizedUrl, {
-          width,
-          height,
-          duration,
-          strategy: "direct",
-        });
-        if (!normalized.ok) {
-          stats.rejectedCount += 1;
-          continue;
-        }
+    return candidates;
+  }
 
-        const candidate = {
-          url: normalized.url,
-          rawUrl,
-          sourceKind,
-          score: normalized.score + scoreBoost,
-          width: normalized.width,
-          height: normalized.height,
-          duration: normalized.duration,
-          format: normalized.format,
-          area: normalized.area,
-          strategy: normalized.strategy,
-          posterUrl: "",
-          previewUrl: "",
-          sourcePreview: context.slice(0, 220),
-        };
+  function buildXiaohongshuVideoStreamCandidate(stream, family, index = 0) {
+    if (!stream || typeof stream !== "object") {
+      return null;
+    }
 
-        const existing = candidatesByUrl.get(candidate.url);
-        if (!existing || candidate.score > existing.score) {
-          candidatesByUrl.set(candidate.url, candidate);
-        }
+    const backupUrls = [];
+    const primaryUrl = normalizeVideoUrl(stream.masterUrl || stream.master_url || stream.url || "");
+    if (primaryUrl) {
+      backupUrls.push(primaryUrl);
+    }
+
+    [
+      ...(Array.isArray(stream.backupUrls) ? stream.backupUrls : []),
+      ...(Array.isArray(stream.backup_urls) ? stream.backup_urls : []),
+    ].forEach((rawUrl) => {
+      const normalized = normalizeVideoUrl(rawUrl || "");
+      if (normalized && !backupUrls.includes(normalized)) {
+        backupUrls.push(normalized);
       }
     });
 
-    const candidates = Array.from(candidatesByUrl.values())
-      .sort((left, right) => right.score - left.score || left.url.localeCompare(right.url));
+    const url = backupUrls[0] || "";
+    if (!url) {
+      return null;
+    }
 
-    return { candidates, stats };
+    const width = Number(stream.width || 0);
+    const height = Number(stream.height || 0);
+    const bitrate = Number(stream.avgBitrate || stream.avg_bitrate || stream.videoBitrate || stream.video_bitrate || 0);
+    const audioBitrate = Number(stream.audioBitrate || stream.audio_bitrate || 0);
+    const streamType = Number(stream.streamType || stream.stream_type || 0);
+    const duration = normalizeXiaohongshuVideoDuration(stream.duration || stream.videoDuration || 0);
+    const codec = String(stream.videoCodec || stream.video_codec || family || "").toLowerCase();
+    const qualityLabel = String(stream.qualityType || stream.quality_type || stream.streamDesc || stream.stream_desc || "").trim();
+    const score = scoreXiaohongshuVideoStreamCandidate({
+      width,
+      height,
+      bitrate,
+      streamType,
+      codec,
+      family,
+      index,
+    });
+
+    return {
+      url,
+      backupUrls,
+      streamFamily: family,
+      streamType,
+      width,
+      height,
+      bitrate,
+      audioBitrate,
+      codec,
+      qualityLabel,
+      duration,
+      score,
+      format: inferVideoFormat(url, stream.contentType || stream.content_type || "video/mp4"),
+    };
   }
 
-  function extractXiaohongshuVideoDimension(text, key) {
-    const raw = String(text || "");
-    if (!raw) {
-      return 0;
-    }
+  function scoreXiaohongshuVideoStreamCandidate(candidate) {
+    let score = 0;
+    const width = Number(candidate?.width || 0);
+    const height = Number(candidate?.height || 0);
+    const bitrate = Number(candidate?.bitrate || 0);
+    const streamType = Number(candidate?.streamType || 0);
+    const codecRank = getXiaohongshuVideoCodecRank(candidate?.codec || candidate?.family || "");
+    const area = width * height;
 
-    const pattern = key === "height"
-      ? /"height"\s*:\s*(\d{2,5})/i
-      : /"width"\s*:\s*(\d{2,5})/i;
-    const match = raw.match(pattern);
-    return Number(match?.[1] || 0) || 0;
+    if (area > 0) {
+      score += Math.min(1000000, area);
+    }
+    if (width > 0) {
+      score += Math.floor(width / 4);
+    }
+    if (height > 0) {
+      score += Math.floor(height / 4);
+    }
+    if (bitrate > 0) {
+      score += Math.min(200000, Math.floor(bitrate / 4));
+    }
+    if (streamType > 0) {
+      score += Math.min(1000, streamType);
+    }
+    score += codecRank * 10;
+    score += Number(candidate?.index || 0) * -1;
+    return score;
   }
 
-  function extractXiaohongshuVideoDuration(text) {
-    const raw = String(text || "");
-    if (!raw) {
+  function getXiaohongshuVideoCodecRank(codec) {
+    const lowered = String(codec || "").toLowerCase();
+    if (lowered.includes("h264")) return 3;
+    if (lowered.includes("h265") || lowered.includes("hevc")) return 2;
+    if (lowered.includes("av1")) return 1;
+    return 0;
+  }
+
+  function rankXiaohongshuVideoCandidates(candidates) {
+    return Array.from(candidates || []).sort((left, right) => {
+      if ((right.width * right.height) !== (left.width * left.height)) {
+        return (right.width * right.height) - (left.width * left.height);
+      }
+      if ((right.bitrate || 0) !== (left.bitrate || 0)) {
+        return (right.bitrate || 0) - (left.bitrate || 0);
+      }
+      if ((right.streamType || 0) !== (left.streamType || 0)) {
+        return (right.streamType || 0) - (left.streamType || 0);
+      }
+      if (getXiaohongshuVideoCodecRank(right.codec || right.streamFamily) !== getXiaohongshuVideoCodecRank(left.codec || left.streamFamily)) {
+        return getXiaohongshuVideoCodecRank(right.codec || right.streamFamily) - getXiaohongshuVideoCodecRank(left.codec || left.streamFamily);
+      }
+      return String(left.url || "").localeCompare(String(right.url || ""));
+    });
+  }
+
+  function buildXiaohongshuVideoMediaItem(candidate, structuredVideo = null) {
+    const structuredCoverUrl = normalizeUrl(structuredVideo?.coverUrl || "");
+    const fallbackUrl = candidate.previewUrl || candidate.posterUrl || candidate.url;
+    const thumbnailUrl = structuredCoverUrl || fallbackUrl;
+    return {
+      id: "video:1",
+      mediaType: "video",
+      url: candidate.url,
+      sourceUrl: candidate.url,
+      thumbnail: thumbnailUrl,
+      previewUrl: thumbnailUrl,
+      posterUrl: structuredCoverUrl || "",
+      format: candidate.format || "MP4",
+      resolution: candidate.width && candidate.height ? `${candidate.width} x ${candidate.height}` : "Unknown",
+      size: "Unknown",
+      width: candidate.width,
+      height: candidate.height,
+      duration: candidate.duration,
+      isOriginal: false,
+      selected: false,
+      score: candidate.score,
+      area: candidate.width * candidate.height,
+      download: {
+        strategy: "direct",
+      },
+    };
+  }
+
+  function normalizeXiaohongshuVideoDuration(value) {
+    const duration = Number(value || 0);
+    if (!Number.isFinite(duration) || duration <= 0) {
       return 0;
     }
-
-    const capaMatch = raw.match(/"capa"\s*:\s*\{[^{}]{0,200}?"duration"\s*:\s*(\d{1,6})/i);
-    if (capaMatch?.[1]) {
-      return Number(capaMatch[1]) || 0;
-    }
-
-    const durations = Array.from(raw.matchAll(/"duration"\s*:\s*(\d{1,6})/gi))
-      .map((match) => Number(match[1] || 0))
-      .filter((value) => Number.isFinite(value) && value > 0)
-      .sort((left, right) => left - right);
-    const duration = durations.find((value) => value <= 3600) || durations[0] || 0;
     if (duration > 1000) {
-      return Math.max(1, Math.round(duration / 1000));
+      return Number((duration / 1000).toFixed(3));
     }
     return duration;
   }
@@ -4679,6 +4797,25 @@ const CONTENT_BUILD_HASH = "1155";
 
     const firstMatch = raw.match(/"firstNoteId"\s*:\s*"([^"]+)"/i);
     return firstMatch?.[1] || "";
+  }
+
+  function extractXiaohongshuJsonObjectText(text, marker) {
+    const raw = String(text || "");
+    if (!raw || !marker) {
+      return "";
+    }
+
+    const markerIndex = raw.indexOf(marker);
+    if (markerIndex < 0) {
+      return "";
+    }
+
+    const braceIndex = raw.indexOf("{", markerIndex);
+    if (braceIndex < 0) {
+      return "";
+    }
+
+    return extractBalancedJson(raw, braceIndex);
   }
 
   async function collectWeixinOriginalProbe(mediaCandidates) {
