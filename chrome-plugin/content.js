@@ -611,12 +611,23 @@ const CONTENT_BUILD_HASH = "1155";
         location,
         document,
       });
-      if (domainResult) {
+      if (domainResult?.media?.length) {
         return domainResult;
       }
+
+      const xiaohongshuVideoDebug = domainResult?.debug?.xiaohongshu || (isXiaohongshuHost() ? collectXiaohongshuVideoDebug() : null);
+      const genericResult = await extractGenericVideos();
+      if (xiaohongshuVideoDebug) {
+        genericResult.debug = {
+          ...(genericResult.debug || {}),
+          xiaohongshu: xiaohongshuVideoDebug,
+        };
+      }
+      return genericResult;
     }
 
-    return await extractGenericVideos();
+    const genericResult = await extractGenericVideos();
+    return genericResult;
   }
 
   function getImageDomainRule(_host) {
@@ -817,7 +828,14 @@ const CONTENT_BUILD_HASH = "1155";
   }
 
   function getVideoDomainRule(_host) {
-    return null;
+    const normalizedHost = String(_host || "").toLowerCase();
+    if (!/(^|\.)xiaohongshu\.com$/i.test(normalizedHost)) {
+      return null;
+    }
+
+    return async () => {
+      return await collectXiaohongshuVideoMedia();
+    };
   }
 
   function normalizeExtractionRange(value) {
@@ -2787,19 +2805,35 @@ const CONTENT_BUILD_HASH = "1155";
       return media;
     }
 
+    const html = document.documentElement?.innerHTML || "";
     const root = findXiaohongshuPostContainer();
-    const candidateImages = root ? collectVisualCandidates(root, {
+    const mainContainer = findXiaohongshuMainMediaContainer(root);
+    const mainCandidateImages = mainContainer ? collectVisualCandidates(mainContainer, {
       minArea: 50000,
       isAllowed: (img, candidate) =>
         isLikelyXiaohongshuContentImage(img) &&
         !isLikelyXiaohongshuUtilityImage(img) &&
         candidate.linkType !== "profile",
     }) : [];
-
-    const mediaCandidates = selectXiaohongshuPostMediaCandidates(candidateImages);
+    const mainMediaCandidates = selectXiaohongshuPostMediaCandidates(mainCandidateImages);
+    const structuredImageProbe = collectXiaohongshuStructuredNoteImageCandidatesFromHtml(html);
+    const structuredMediaCandidates = structuredImageProbe.candidates;
+    const fallbackCandidateImages = root ? collectVisualCandidates(root, {
+      minArea: 50000,
+      isAllowed: (img, candidate) =>
+        isLikelyXiaohongshuContentImage(img) &&
+        !isLikelyXiaohongshuUtilityImage(img) &&
+        candidate.linkType !== "profile",
+    }) : [];
+    const fallbackMediaCandidates = selectXiaohongshuPostMediaCandidates(fallbackCandidateImages);
     const htmlProbe = collectXiaohongshuHighResUrlsFromHtml();
     const htmlHighResUrls = htmlProbe.urls;
-    const enlargement = await collectXiaohongshuEnlargedMedia(mediaCandidates);
+    const prioritizedCandidates = mainMediaCandidates.length
+      ? mainMediaCandidates
+      : structuredMediaCandidates.length
+        ? structuredMediaCandidates
+        : fallbackMediaCandidates;
+    const enlargement = await collectXiaohongshuEnlargedMedia(prioritizedCandidates);
     const urls = enlargement.urls;
 
     media.originalUrls = urls.size ? urls : null;
@@ -2807,9 +2841,26 @@ const CONTENT_BUILD_HASH = "1155";
     media.debug.original = {
       containerFound: !!root,
       containerTag: root ? root.tagName : null,
-      candidateCount: candidateImages.length,
-      clusterCount: mediaCandidates.length,
-      renderedCandidatePreview: mediaCandidates.slice(0, 6).map((candidate) => ({
+      mainContainerFound: !!mainContainer,
+      mainContainerTag: mainContainer ? mainContainer.tagName : null,
+      candidateStrategy: mainMediaCandidates.length
+        ? "main-container"
+        : structuredMediaCandidates.length
+          ? "structured-imageList"
+          : "visual-cluster",
+      candidateCount: mainCandidateImages.length,
+      clusterCount: fallbackCandidateImages.length,
+      structuredImageCount: structuredMediaCandidates.length,
+      renderedCandidatePreview: prioritizedCandidates.slice(0, 6).map((candidate) => ({
+        url: normalizeXiaohongshuImageUrl(candidate.sourceUrl || candidate.img?.currentSrc || candidate.img?.src || ""),
+        width: candidate.width,
+        height: candidate.height,
+        sourceKind: candidate.sourceKind || "",
+        sourceScope: candidate.sourceScope || "",
+      })),
+      structuredImagePreview: structuredImageProbe.preview.slice(0, 6),
+      structuredRejectedPreview: structuredImageProbe.rejectedPreview.slice(0, 6),
+      renderedClusterPreview: fallbackMediaCandidates.slice(0, 6).map((candidate) => ({
         url: normalizeXiaohongshuImageUrl(candidate.img.currentSrc || candidate.img.src || ""),
         width: candidate.width,
         height: candidate.height,
@@ -3826,6 +3877,127 @@ const CONTENT_BUILD_HASH = "1155";
     return scored[0]?.node || document.querySelector("main") || document.body;
   }
 
+  function findXiaohongshuMainMediaContainer(root = findXiaohongshuPostContainer()) {
+    if (!(root instanceof Element)) {
+      return null;
+    }
+
+    const rootBounds = typeof root.getBoundingClientRect === "function" ? root.getBoundingClientRect() : null;
+    const candidates = collectVisualCandidates(root, {
+      minArea: 50000,
+      isAllowed: (img, candidate) =>
+        isLikelyXiaohongshuContentImage(img) &&
+        !isLikelyXiaohongshuUtilityImage(img) &&
+        candidate.linkType !== "profile",
+    });
+
+    if (!candidates.length) {
+      return null;
+    }
+
+    const primaryCandidates = candidates.slice(0, Math.min(candidates.length, 5));
+    const scored = new Map();
+
+    primaryCandidates.forEach((candidate, index) => {
+      let node = candidate.img;
+      let depth = 0;
+      while (node instanceof Element && node !== root && depth < 8) {
+        if (!scored.has(node)) {
+          const score = scoreXiaohongshuMainMediaContainer(node, root, primaryCandidates, index, rootBounds);
+          if (score > 0) {
+            scored.set(node, score);
+          }
+        }
+        node = node.parentElement;
+        depth += 1;
+      }
+    });
+
+    const ranked = Array.from(scored.entries())
+      .map(([node, score]) => ({ node, score }))
+      .sort((left, right) => right.score - left.score);
+
+    const best = ranked[0] || null;
+    if (!best || best.score < 55) {
+      return null;
+    }
+
+    return best.node;
+  }
+
+  function scoreXiaohongshuMainMediaContainer(node, root, seedCandidates = [], seedIndex = 0, rootBounds = null) {
+    if (!(node instanceof Element) || !(root instanceof Element) || !root.contains(node)) {
+      return 0;
+    }
+
+    const images = Array.from(node.querySelectorAll("img"));
+    if (!images.length) {
+      return 0;
+    }
+
+    const realImages = images.filter((img) => {
+      const width = Number(img.naturalWidth || img.width || 0);
+      const height = Number(img.naturalHeight || img.height || 0);
+      const area = width * height;
+      return area >= 50000 && isLikelyXiaohongshuContentImage(img) && !isLikelyXiaohongshuUtilityImage(img);
+    });
+    if (!realImages.length) {
+      return 0;
+    }
+
+    let score = 0;
+    const text = `${node.getAttribute("class") || ""} ${node.getAttribute("id") || ""} ${node.getAttribute("data-testid") || ""} ${node.getAttribute("role") || ""}`;
+    if (/(note|post|content|media|gallery|swiper|carousel|picture|photo|image|feed)/i.test(text)) {
+      score += 35;
+    }
+    if (/(comment|reply|recommend|related|feed-list|comment-list)/i.test(text)) {
+      score -= 30;
+    }
+
+    const count = realImages.length;
+    score += Math.min(30, count * 6);
+    if (count <= 8) {
+      score += 12;
+    }
+    if (count > 12) {
+      score -= 12;
+    }
+
+    const totalArea = realImages.reduce((sum, img) => {
+      return sum + Number(img.naturalWidth || img.width || 0) * Number(img.naturalHeight || img.height || 0);
+    }, 0);
+    score += Math.min(20, Math.floor(totalArea / 200000));
+
+    const bounds = typeof node.getBoundingClientRect === "function" ? node.getBoundingClientRect() : null;
+    if (bounds) {
+      if (bounds.top >= 0 && bounds.top < window.innerHeight * 1.5) {
+        score += 14;
+      }
+      if (rootBounds && bounds.bottom <= rootBounds.bottom + 1200) {
+        score += 8;
+      }
+      if (bounds.height > 0 && rootBounds && bounds.height < rootBounds.height * 0.8) {
+        score += 10;
+      }
+      if (bounds.height > 0 && bounds.height > window.innerHeight * 2.8) {
+        score -= 18;
+      }
+    }
+
+    const candidateTop = seedCandidates[seedIndex]?.top || 0;
+    const nodeTop = bounds ? Math.max(0, Math.round(bounds.top + window.scrollY)) : 0;
+    if (candidateTop && nodeTop && Math.abs(nodeTop - candidateTop) < 400) {
+      score += 8;
+    }
+
+    const imageCount = images.length;
+    if (imageCount > 20) {
+      score -= 18;
+    }
+
+    return score;
+  }
+
   function findWeixinArticleContainer() {
     const selectors = [
       "#js_content",
@@ -4295,6 +4467,220 @@ const CONTENT_BUILD_HASH = "1155";
     return { urls, rawCount, imageCount, rawPreview, rejectedPreview };
   }
 
+  function collectXiaohongshuVideoMedia() {
+    const html = document.documentElement?.innerHTML || "";
+    const { candidates, stats } = collectXiaohongshuVideoCandidatesFromHtml(html);
+    const media = [];
+    const seen = new Set();
+    const acceptedPreview = [];
+
+    candidates.forEach((candidate) => {
+      const normalized = normalizeVideoCandidate(candidate.url, {
+        width: candidate.width,
+        height: candidate.height,
+        duration: candidate.duration,
+        strategy: "direct",
+      });
+      if (!normalized.ok || seen.has(normalized.url)) {
+        return;
+      }
+
+      seen.add(normalized.url);
+      if (acceptedPreview.length < 8) {
+        acceptedPreview.push({
+          url: normalized.url,
+          sourceKind: candidate.sourceKind,
+          width: normalized.width,
+          height: normalized.height,
+          duration: normalized.duration,
+          score: candidate.score,
+        });
+      }
+
+      media.push({
+        id: `video:${media.length + 1}`,
+        mediaType: "video",
+        url: normalized.url,
+        sourceUrl: normalized.url,
+        thumbnail: candidate.posterUrl || candidate.previewUrl || normalized.url,
+        previewUrl: candidate.previewUrl || candidate.posterUrl || normalized.url,
+        posterUrl: candidate.posterUrl || "",
+        format: normalized.format,
+        resolution: normalized.width && normalized.height ? `${normalized.width} x ${normalized.height}` : "Unknown",
+        size: "Unknown",
+        width: normalized.width,
+        height: normalized.height,
+        duration: normalized.duration,
+        isOriginal: false,
+        selected: false,
+        score: candidate.score,
+        area: normalized.area,
+        download: {
+          strategy: normalized.strategy,
+        },
+      });
+    });
+
+    return {
+      media,
+      debug: {
+        xiaohongshu: {
+          noteId: extractXiaohongshuNoteId(location.href),
+          currentNoteId: extractXiaohongshuCurrentNoteIdFromHtml(html),
+          noteDetailMapFound: /"noteDetailMap"\s*:\s*\{/.test(html),
+          mediaV2Found: /"mediaV2"\s*:\s*"/.test(html),
+          htmlLength: html.length,
+          sourceHits: stats.sourceHits,
+          candidateCount: candidates.length,
+          acceptedCount: media.length,
+          rejectedCount: stats.rejectedCount,
+          candidatePreview: candidates.slice(0, 8).map((candidate) => ({
+            url: candidate.url,
+            sourceKind: candidate.sourceKind,
+            width: candidate.width,
+            height: candidate.height,
+            duration: candidate.duration,
+            score: candidate.score,
+          })),
+          acceptedPreview,
+        },
+      },
+    };
+  }
+
+  function collectXiaohongshuVideoDebug() {
+    return collectXiaohongshuVideoMedia().debug?.xiaohongshu || null;
+  }
+
+  function collectXiaohongshuVideoCandidatesFromHtml(html) {
+    const candidatesByUrl = new Map();
+    const stats = {
+      rejectedCount: 0,
+      sourceHits: {
+        masterUrl: 0,
+        backupUrl: 0,
+        defaultScreencastStream: 0,
+        master_url: 0,
+        backup_urls: 0,
+      },
+    };
+
+    const patterns = [
+      { sourceKind: "masterUrl", scoreBoost: 120, pattern: /"masterUrl"\s*:\s*"((?:https?:\\\/\\\/|https?:\/\/)[^"]+?\.mp4(?:\?[^"]*)?)"/gi },
+      { sourceKind: "backupUrl", scoreBoost: 70, pattern: /"backupUrls"\s*:\s*\[\s*"((?:https?:\\\/\\\/|https?:\/\/)[^"]+?\.mp4(?:\?[^"]*)?)"/gi },
+      { sourceKind: "defaultScreencastStream", scoreBoost: 110, pattern: /"default_screencast_stream"\s*:\s*"((?:https?:\\\/\\\/|https?:\/\/)[^"]+?\.mp4(?:\?[^"]*)?)"/gi },
+      { sourceKind: "master_url", scoreBoost: 120, pattern: /"master_url"\s*:\s*"((?:https?:\\\/\\\/|https?:\/\/)[^"]+?\.mp4(?:\?[^"]*)?)"/gi },
+      { sourceKind: "backup_urls", scoreBoost: 70, pattern: /"backup_urls"\s*:\s*\[\s*"((?:https?:\\\/\\\/|https?:\/\/)[^"]+?\.mp4(?:\?[^"]*)?)"/gi },
+    ];
+
+    patterns.forEach(({ sourceKind, scoreBoost, pattern }) => {
+      let match;
+      while ((match = pattern.exec(html)) !== null) {
+        stats.sourceHits[sourceKind] += 1;
+        const rawUrl = decodeEscapedUrl(match[1]);
+        const normalizedUrl = normalizeVideoUrl(rawUrl);
+        if (!normalizedUrl) {
+          stats.rejectedCount += 1;
+          continue;
+        }
+
+        const context = html.slice(
+          Math.max(0, match.index - 420),
+          Math.min(html.length, match.index + match[0].length + 900)
+        );
+        const width = extractXiaohongshuVideoDimension(context, "width");
+        const height = extractXiaohongshuVideoDimension(context, "height");
+        const duration = extractXiaohongshuVideoDuration(context);
+        const normalized = normalizeVideoCandidate(normalizedUrl, {
+          width,
+          height,
+          duration,
+          strategy: "direct",
+        });
+        if (!normalized.ok) {
+          stats.rejectedCount += 1;
+          continue;
+        }
+
+        const candidate = {
+          url: normalized.url,
+          rawUrl,
+          sourceKind,
+          score: normalized.score + scoreBoost,
+          width: normalized.width,
+          height: normalized.height,
+          duration: normalized.duration,
+          format: normalized.format,
+          area: normalized.area,
+          strategy: normalized.strategy,
+          posterUrl: "",
+          previewUrl: "",
+          sourcePreview: context.slice(0, 220),
+        };
+
+        const existing = candidatesByUrl.get(candidate.url);
+        if (!existing || candidate.score > existing.score) {
+          candidatesByUrl.set(candidate.url, candidate);
+        }
+      }
+    });
+
+    const candidates = Array.from(candidatesByUrl.values())
+      .sort((left, right) => right.score - left.score || left.url.localeCompare(right.url));
+
+    return { candidates, stats };
+  }
+
+  function extractXiaohongshuVideoDimension(text, key) {
+    const raw = String(text || "");
+    if (!raw) {
+      return 0;
+    }
+
+    const pattern = key === "height"
+      ? /"height"\s*:\s*(\d{2,5})/i
+      : /"width"\s*:\s*(\d{2,5})/i;
+    const match = raw.match(pattern);
+    return Number(match?.[1] || 0) || 0;
+  }
+
+  function extractXiaohongshuVideoDuration(text) {
+    const raw = String(text || "");
+    if (!raw) {
+      return 0;
+    }
+
+    const capaMatch = raw.match(/"capa"\s*:\s*\{[^{}]{0,200}?"duration"\s*:\s*(\d{1,6})/i);
+    if (capaMatch?.[1]) {
+      return Number(capaMatch[1]) || 0;
+    }
+
+    const durations = Array.from(raw.matchAll(/"duration"\s*:\s*(\d{1,6})/gi))
+      .map((match) => Number(match[1] || 0))
+      .filter((value) => Number.isFinite(value) && value > 0)
+      .sort((left, right) => left - right);
+    const duration = durations.find((value) => value <= 3600) || durations[0] || 0;
+    if (duration > 1000) {
+      return Math.max(1, Math.round(duration / 1000));
+    }
+    return duration;
+  }
+
+  function extractXiaohongshuCurrentNoteIdFromHtml(html) {
+    const raw = String(html || "");
+    if (!raw) {
+      return "";
+    }
+
+    const currentMatch = raw.match(/"currentNoteId"\s*:\s*"([^"]+)"/i);
+    if (currentMatch?.[1]) {
+      return currentMatch[1];
+    }
+
+    const firstMatch = raw.match(/"firstNoteId"\s*:\s*"([^"]+)"/i);
+    return firstMatch?.[1] || "";
+  }
+
   async function collectWeixinOriginalProbe(mediaCandidates) {
     const urls = new Set();
     const meta = new Map();
@@ -4520,7 +4906,7 @@ const CONTENT_BUILD_HASH = "1155";
     const meta = new Map();
     const candidates = mediaCandidates.slice(0, 30);
     const probes = await mapWithConcurrency(candidates, 4, async (candidate) => {
-      const sourceUrl = normalizeXiaohongshuImageUrl(candidate.img.currentSrc || candidate.img.src || "");
+      const sourceUrl = normalizeXiaohongshuImageUrl(candidate.sourceUrl || candidate.img?.currentSrc || candidate.img?.src || "");
       if (!sourceUrl) {
         return null;
       }
@@ -4554,6 +4940,8 @@ const CONTENT_BUILD_HASH = "1155";
         dimensionSource,
         renderedWidth: candidate.width,
         renderedHeight: candidate.height,
+        sourceKind: candidate.sourceKind || "",
+        sourceScope: candidate.sourceScope || "",
       };
     });
 
@@ -4568,6 +4956,136 @@ const CONTENT_BUILD_HASH = "1155";
     });
 
     return { urls, meta, probes: probes.filter(Boolean) };
+  }
+
+  function collectXiaohongshuStructuredNoteImageCandidatesFromHtml(html) {
+    const noteId = extractXiaohongshuNoteId(location.href);
+    const noteChunk = extractXiaohongshuNoteDetailChunkFromHtml(html, noteId);
+    const imageListText = extractXiaohongshuImageListTextFromHtml(noteChunk || html);
+    const candidatesByUrl = new Map();
+    const preview = [];
+    const rejectedPreview = [];
+
+    if (!imageListText) {
+      return {
+        candidates: [],
+        preview,
+        rejectedPreview,
+      };
+    }
+
+    const patterns = [
+      { sourceKind: "imageList:urlDefault", scoreBoost: 130, pattern: /"urlDefault"\s*:\s*"((?:https?:\\\/\\\/|https?:\/\/)[^"]+)"/gi },
+      { sourceKind: "imageList:urlPre", scoreBoost: 110, pattern: /"urlPre"\s*:\s*"((?:https?:\\\/\\\/|https?:\/\/)[^"]+)"/gi },
+      { sourceKind: "imageList:infoList", scoreBoost: 90, pattern: /"url"\s*:\s*"((?:https?:\\\/\\\/|https?:\/\/)[^"]+)"/gi },
+    ];
+
+    patterns.forEach(({ sourceKind, scoreBoost, pattern }) => {
+      let match;
+      while ((match = pattern.exec(imageListText)) !== null) {
+        const rawUrl = decodeEscapedUrl(match[1]);
+        const normalizedUrl = normalizeXiaohongshuImageUrl(rawUrl);
+        if (!normalizedUrl || !isXiaohongshuImageCdnUrl(normalizedUrl) || isLikelyXiaohongshuNonContentUrl(normalizedUrl)) {
+          if (rejectedPreview.length < 8) {
+            rejectedPreview.push(rawUrl || match[1] || "");
+          }
+          continue;
+        }
+
+        const context = imageListText.slice(
+          Math.max(0, match.index - 320),
+          Math.min(imageListText.length, match.index + match[0].length + 640)
+        );
+        const width = extractXiaohongshuImageDimension(context, "width");
+        const height = extractXiaohongshuImageDimension(context, "height");
+        const candidate = {
+          sourceUrl: normalizedUrl,
+          width,
+          height,
+          area: width * height,
+          top: 0,
+          sourceKind,
+          sourceScope: "structured-imageList",
+          score: scoreBoost + Math.min(20, Math.floor((width * height) / 200000)),
+          previewUrl: normalizedUrl,
+          posterUrl: "",
+        };
+
+        const existing = candidatesByUrl.get(candidate.sourceUrl);
+        if (!existing || candidate.score > existing.score) {
+          candidatesByUrl.set(candidate.sourceUrl, candidate);
+        }
+      }
+    });
+
+    const candidates = Array.from(candidatesByUrl.values())
+      .sort((left, right) => right.score - left.score || left.sourceUrl.localeCompare(right.sourceUrl));
+
+    candidates.slice(0, 8).forEach((candidate) => {
+      preview.push({
+        url: candidate.sourceUrl,
+        width: candidate.width,
+        height: candidate.height,
+        sourceKind: candidate.sourceKind,
+        sourceScope: candidate.sourceScope,
+      });
+    });
+
+    return {
+      candidates,
+      preview,
+      rejectedPreview,
+    };
+  }
+
+  function extractXiaohongshuNoteDetailChunkFromHtml(html, noteId) {
+    const raw = String(html || "");
+    if (!raw) {
+      return "";
+    }
+
+    if (noteId) {
+      const noteMarker = `\"${noteId}\":{`;
+      const noteIndex = raw.indexOf(noteMarker);
+      if (noteIndex >= 0) {
+        return raw.slice(noteIndex, Math.min(raw.length, noteIndex + 260000));
+      }
+    }
+
+    const mapIndex = raw.indexOf('"noteDetailMap":{');
+    if (mapIndex >= 0) {
+      return raw.slice(mapIndex, Math.min(raw.length, mapIndex + 260000));
+    }
+
+    return raw;
+  }
+
+  function extractXiaohongshuImageListTextFromHtml(text) {
+    const raw = String(text || "");
+    if (!raw) {
+      return "";
+    }
+
+    const marker = '"imageList":[';
+    const start = raw.indexOf(marker);
+    if (start < 0) {
+      return "";
+    }
+
+    return extractBalancedJson(raw, start + marker.length - 1);
+  }
+
+  function extractXiaohongshuImageDimension(text, key) {
+    const raw = String(text || "");
+    if (!raw) {
+      return 0;
+    }
+
+    const pattern = key === "height"
+      ? /"height"\s*:\s*(\d{2,5})/i
+      : /"width"\s*:\s*(\d{2,5})/i;
+    const match = raw.match(pattern);
+    return Number(match?.[1] || 0) || 0;
   }
 
   function isAcceptableXiaohongshuEnlargedProbe(probe) {

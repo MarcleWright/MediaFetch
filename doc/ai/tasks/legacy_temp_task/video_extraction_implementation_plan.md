@@ -715,3 +715,26 @@ This task is complete only when all are true:
 7. Metadata includes `videoCount` and `counts`.
 8. Eagle and Lineage remain image-only.
 9. The architecture is ready for a future `audio` layer without mixed media-type rule branching.
+
+## Implementation Notes
+
+### 2026-06-04 Boundary Cleanup Status
+
+Completed:
+
+- `extractGenericImages(...)` is now a real generic image fallback and no longer calls `collectPlatformMedia(...)`.
+- image platform-aware extraction was split into a separate path so supported image hosts can still use domain/platform augmentation.
+- popup merged media assembly now uses an explicit helper instead of ad hoc array concatenation.
+
+Residual risk:
+
+- `extractDomainImages(...)` and `extractGenericImages(...)` now contain some intentional duplication.
+- This duplication is acceptable for now because it preserves a clean boundary between generic image logic and platform-aware image logic.
+- Do not ask a low-capability agent to “deduplicate” these paths unless the boundary rules are explicitly restated first.
+- Premature deduplication here is likely to re-mix generic and platform-specific image behavior.
+
+Recommended next step:
+
+- Do not spend the next pass on cleanup-only refactors.
+- The next product-facing step should be the first real video special-domain rule.
+- The first selected site is `xiaohongshu`.
