@@ -63,9 +63,17 @@ body {
 .toolbarRow,
 .summary {
   display: flex;
-  gap: 8px;
+  gap: 6px;
   flex-wrap: wrap;
   align-items: center;
+}
+
+.selectionRow {
+  display: inline-flex;
+  align-items: center;
+  gap: 8px;
+  flex-wrap: wrap;
+  margin-left: auto;
 }
 
 .summary {
@@ -172,7 +180,66 @@ button svg {
 }
 
 .iconButton {
-  padding: 0 10px;
+  width: 30px;
+  min-width: 30px;
+  flex: 0 0 30px;
+  padding: 0;
+}
+
+.iconButton svg {
+  width: 16px;
+  height: 16px;
+}
+
+.rangePillGroup {
+  display: inline-flex;
+  align-items: center;
+  gap: 3px;
+  padding: 3px;
+  border: 1px solid var(--line);
+  border-radius: 10px;
+  background: #fff;
+}
+
+.rangePill {
+  min-height: 26px;
+  padding: 0 12px;
+  border-radius: 8px;
+  background: transparent;
+  color: var(--muted);
+  font-size: 12px;
+  font-weight: 700;
+}
+
+.rangePill:hover:not(.active) {
+  background: var(--accent-soft);
+  color: var(--accent);
+}
+
+.rangePill.active {
+  background: var(--accent);
+  color: #fff;
+}
+
+.lineageActions .iconButton,
+.debugActions .iconButton {
+  background: var(--accent-soft);
+  color: var(--accent);
+}
+
+.lineageActions .iconButton:hover:not(:disabled),
+.debugActions .iconButton:hover:not(:disabled) {
+  background: #dce9ff;
+}
+
+.toolbarRow > button:not(.iconButton):not(#selectOriginalBtn) {
+  padding-left: 10px;
+  padding-right: 10px;
+}
+
+#selectOriginalBtn {
+  padding-left: 10px;
+  padding-right: 10px;
 }
 
 button:disabled {

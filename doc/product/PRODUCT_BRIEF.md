@@ -29,6 +29,7 @@ The repository currently contains two delivery paths:
 4. download selected items into a structured folder
 5. preserve project metadata in `metadata.json`
 6. optionally export supported image results to Eagle or Lineage
+7. use a compact popup toolbar with icon-only settings/refresh actions and a segmented extraction-range control for images, videos, or both
 
 ## Non-goals
 

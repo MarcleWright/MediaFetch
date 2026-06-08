@@ -19,7 +19,9 @@ const selectAllBtn = document.getElementById("selectAllBtn");
 const clearBtn = document.getElementById("clearBtn");
 const selectOriginalBtn = document.getElementById("selectOriginalBtn");
 const downloadBtn = document.getElementById("downloadBtn");
-const extractionRangeInput = document.getElementById("extractionRange");
+const rangeImagesBtn = document.getElementById("rangeImagesBtn");
+const rangeVideosBtn = document.getElementById("rangeVideosBtn");
+const rangeBothBtn = document.getElementById("rangeBothBtn");
 const clipboardUrlInput = document.getElementById("clipboardUrlInput");
 const clipboardUrlEl = document.getElementById("clipboardUrl");
 const clipboardDownloadBtn = document.getElementById("clipboardDownloadBtn");
@@ -104,9 +106,12 @@ folderNameInput.addEventListener("change", () => {
 });
 
 refreshBtn.addEventListener("click", extractFromCurrentTab);
-extractionRangeInput?.addEventListener("change", async () => {
-  await savePopupSetting("extractionRange", normalizeExtractionRange(extractionRangeInput.value));
-  await extractFromCurrentTab();
+document.querySelectorAll(".rangePill").forEach((button) => {
+  button.addEventListener("click", async () => {
+    const nextRange = normalizeExtractionRange(button.getAttribute("data-range") || "images");
+    await savePopupSetting("extractionRange", nextRange);
+    await extractFromCurrentTab();
+  });
 });
 selectAllBtn.addEventListener("click", () => {
   getVisibleMediaItems().forEach((item) => {
@@ -308,9 +313,7 @@ function applyPopupSettingsToUi() {
   if (convertHeicToPngInput) {
     convertHeicToPngInput.checked = settings.convertHeicToPng;
   }
-  if (extractionRangeInput) {
-    extractionRangeInput.value = normalizeExtractionRange(settings.extractionRange || state.extractionRange || "images");
-  }
+  updateExtractionRangeButtons(settings.extractionRange || state.extractionRange || "images");
 
   if (clipboardBoxEl) {
     clipboardBoxEl.hidden = !settings.showLinkDownload;
@@ -350,7 +353,20 @@ function getConvertHeicToPngSetting() {
 }
 
 function getExtractionRangeSetting() {
-  return normalizeExtractionRange(extractionRangeInput?.value || state.settings?.extractionRange || state.extractionRange || "images");
+  return normalizeExtractionRange(state.settings?.extractionRange || state.extractionRange || "images");
+}
+
+function updateExtractionRangeButtons(value) {
+  const normalized = normalizeExtractionRange(value);
+  const buttons = [rangeImagesBtn, rangeVideosBtn, rangeBothBtn];
+  buttons.forEach((button) => {
+    if (!button) {
+      return;
+    }
+    const isActive = normalizeExtractionRange(button.getAttribute("data-range") || "") === normalized;
+    button.classList.toggle("active", isActive);
+    button.setAttribute("aria-pressed", String(isActive));
+  });
 }
 
 function saveConvertHeicToPngSetting() {

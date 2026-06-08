@@ -1,5 +1,21 @@
 # Dev Log
 
+### 2026-06-08 Popup Toolbar Range Control Polish Completed
+
+Status: Done
+
+Summary:
+
+- tightened the popup toolbar spacing for the left-side action group
+- moved extraction range selection into a right-aligned segmented pill control on the same row
+- kept `Select Original` with the left-side actions and preserved the existing extraction behavior
+
+Links:
+
+- `chrome-plugin/popup.html`
+- `chrome-plugin/popup.css`
+- `chrome-plugin/popup.js`
+
 ### 2026-06-05 Xiaohongshu Video Cover Task Completed
 
 Status: Done

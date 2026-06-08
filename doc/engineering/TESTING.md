@@ -22,6 +22,7 @@ Current important manual checks:
    - `images`
    - `videos`
    - `both`
+   - the popup segmented pill control updates and persists the chosen range
 5. mixed-media selection still renders correctly
 6. mixed-media download still works for current supported scope
 

@@ -2,13 +2,17 @@
 
 ## Popup Behavior
 
-The Chrome plugin popup supports extraction range selection:
+The Chrome plugin popup supports extraction range selection through a segmented pill control:
 
 - `images`
 - `videos`
 - `both`
 
 This is an execution control, not just a display filter.
+
+The toolbar keeps the primary action buttons left-aligned and places the extraction-range control on the same row at the far right.
+
+The settings and refresh actions use icon-only buttons, while `Select Original` remains grouped with the other left-side toolbar actions.
 
 ## Selection Rules
 
