@@ -9,13 +9,28 @@ let activeDownloadTask = null;
 const downloadTaskQueue = [];
 const DOWNLOAD_ORIGINALS_MENU_ID = "mediafetch-download-originals";
 const WEIBO_DOWNLOAD_RULE_ID = 901001;
+const XINPIANCHANG_DOWNLOAD_RULE_ID = 901002;
+const XIAOHONGSHU_DOWNLOAD_RULE_ID = 901003;
+const SINAIMG_DOWNLOAD_RULE_ID = 901004;
 const METADATA_SENTINEL_FILE_NAME = "__mediafetch_metadata__.json";
 const DOWNLOAD_STRATEGY_DIRECT = "direct";
 const DOWNLOAD_STRATEGY_FETCH_BLOB = "fetchBlob";
 const HEIC_CONVERTER_OFFSCREEN_URL = "offscreen.html";
-const DOWNLOAD_STRATEGY_RULES = [
+const IMAGE_DOWNLOAD_STRATEGY_RULES = [
   { strategy: DOWNLOAD_STRATEGY_FETCH_BLOB, test: isSinaimgUrl },
   { strategy: DOWNLOAD_STRATEGY_FETCH_BLOB, test: isXiaohongshuCdnUrl },
+];
+const VIDEO_DOWNLOAD_STRATEGY_RULES = [
+  { strategy: DOWNLOAD_STRATEGY_DIRECT, test: isXinpianchangVideoUrl },
+  { strategy: DOWNLOAD_STRATEGY_DIRECT, test: isWeiboVideoUrl },
+];
+const IMAGE_DOWNLOAD_HEADER_RULE_BUILDERS = [
+  { id: SINAIMG_DOWNLOAD_RULE_ID, test: isSinaimgUrl, build: buildSinaimgDownloadHeaderRule },
+  { id: XIAOHONGSHU_DOWNLOAD_RULE_ID, test: isXiaohongshuCdnUrl, build: buildXiaohongshuDownloadHeaderRule },
+];
+const VIDEO_DOWNLOAD_HEADER_RULE_BUILDERS = [
+  { id: WEIBO_DOWNLOAD_RULE_ID, test: isWeiboVideoUrl, build: buildWeiboVideoDownloadHeaderRule },
+  { id: XINPIANCHANG_DOWNLOAD_RULE_ID, test: isXinpianchangVideoUrl, build: buildXinpianchangVideoDownloadHeaderRule },
 ];
 const features = globalThis.MEDIAFETCH_FEATURES || {};
 const lineageFeatureEnabled = !!features.lineageIntegration;
@@ -85,8 +100,13 @@ chrome.runtime.onMessage.addListener((message, _sender, sendResponse) => {
       ? message.fileNames.map((item) => sanitizeFileName(item)).filter(Boolean)
       : [];
     currentDownloadReferer = normalizeHttpUrl(message.pageUrl || "") || "https://weibo.com/";
+    const preparedMediaItems = Array.isArray(message.mediaItems)
+      ? message.mediaItems
+      : Array.isArray(message.urls)
+        ? message.urls.map((url) => ({ url, mediaType: "image" }))
+        : [];
 
-    setupDownloadHeaderRules(message.urls || [], currentDownloadReferer)
+    setupDownloadHeaderRules(preparedMediaItems, currentDownloadReferer)
       .then(() => sendResponse({ ok: true }))
       .catch((error) => sendResponse({
         ok: false,
@@ -608,7 +628,7 @@ async function downloadMediaBatch(mediaItems, options) {
   const filePrefix = getDownloadFilePrefix(options.metadata);
   currentDownloadFolder = folder;
   currentDownloadReferer = referer;
-  await setupDownloadHeaderRules(mediaItems.map((item) => item.url), referer);
+  await setupDownloadHeaderRules(mediaItems, referer);
   pendingDownloadFileNames = mediaItems.map((item, index) => {
     const extension = inferOutputExtension(item, options);
     return buildIndexedFileName(filePrefix, index, extension);
@@ -807,16 +827,38 @@ function inferVideoExtension(url, format) {
   return "mp4";
 }
 
-// Network quirks are centralized here so download batching stays platform-neutral.
-function selectDownloadStrategy(item, _context = {}) {
+function selectDownloadStrategy(item, context = {}) {
+  return item?.mediaType === "video"
+    ? selectVideoDownloadStrategy(item, context)
+    : selectImageDownloadStrategy(item, context);
+}
+
+function selectImageDownloadStrategy(item, context = {}) {
   const hinted = String(item?.download?.strategy || "").trim();
   if (hinted === DOWNLOAD_STRATEGY_FETCH_BLOB || hinted === DOWNLOAD_STRATEGY_DIRECT) {
     return hinted;
   }
 
-  const url = item?.url || "";
-  const rule = DOWNLOAD_STRATEGY_RULES.find((entry) => entry.test(url, item, _context));
-  return rule?.strategy || DOWNLOAD_STRATEGY_DIRECT;
+  const rule = getImageDownloadStrategyRule(item, context);
+  if (rule) {
+    return rule.strategy;
+  }
+
+  return DOWNLOAD_STRATEGY_DIRECT;
+}
+
+function selectVideoDownloadStrategy(item, context = {}) {
+  const hinted = String(item?.download?.strategy || "").trim();
+  if (hinted === DOWNLOAD_STRATEGY_FETCH_BLOB || hinted === DOWNLOAD_STRATEGY_DIRECT) {
+    return hinted;
+  }
+
+  const rule = getVideoDownloadStrategyRule(item, context);
+  if (rule) {
+    return rule.strategy;
+  }
+
+  return DOWNLOAD_STRATEGY_FETCH_BLOB;
 }
 
 async function downloadFetchedBlob(url, filename) {
@@ -926,48 +968,142 @@ async function processDownloadQueue() {
   }
 }
 
-async function setupDownloadHeaderRules(urls, referer = "https://weibo.com/") {
-  if (!Array.isArray(urls) || !urls.some((url) => isSinaimgUrl(url))) {
-    return;
-  }
+async function setupDownloadHeaderRules(mediaItems, referer = "https://weibo.com/") {
+  const normalizedItems = Array.isArray(mediaItems)
+    ? mediaItems.map((item) => (typeof item === "string" ? { url: item, mediaType: "image" } : item))
+    : [];
+  const addRules = resolveDownloadHeaderRules(normalizedItems, { referer });
 
-  if (!chrome.declarativeNetRequest?.updateDynamicRules) {
+  if (!addRules.length || !chrome.declarativeNetRequest?.updateDynamicRules) {
     return;
   }
 
   await chrome.declarativeNetRequest.updateDynamicRules({
-    removeRuleIds: [WEIBO_DOWNLOAD_RULE_ID],
-    addRules: [{
-      id: WEIBO_DOWNLOAD_RULE_ID,
-      priority: 1,
-      action: {
-        type: "modifyHeaders",
-        requestHeaders: [
-          {
-            header: "Referer",
-            operation: "set",
-            value: referer,
-          },
-          {
-            header: "Origin",
-            operation: "set",
-            value: "https://weibo.com",
-          },
-        ],
-      },
-      condition: {
-        urlFilter: "||sinaimg.cn/",
-        resourceTypes: [
-          "main_frame",
-          "sub_frame",
-          "image",
-          "media",
-          "xmlhttprequest",
-          "other",
-        ],
-      },
-    }],
+    removeRuleIds: [WEIBO_DOWNLOAD_RULE_ID, XINPIANCHANG_DOWNLOAD_RULE_ID, XIAOHONGSHU_DOWNLOAD_RULE_ID, SINAIMG_DOWNLOAD_RULE_ID],
+    addRules,
   });
+}
+
+function resolveDownloadHeaderRules(mediaItems, context = {}) {
+  const items = Array.isArray(mediaItems) ? mediaItems : [];
+  const resolvedRules = new Map();
+  items.forEach((item) => {
+    const rule = item?.mediaType === "video"
+      ? getVideoDownloadHeaderRule(item, context)
+      : getImageDownloadHeaderRule(item, context);
+    if (rule && !resolvedRules.has(rule.id)) {
+      resolvedRules.set(rule.id, rule.build(context));
+    }
+  });
+  return Array.from(resolvedRules.values());
+}
+
+function getImageDownloadStrategyRule(item, context = {}) {
+  const url = item?.url || "";
+  return IMAGE_DOWNLOAD_STRATEGY_RULES.find((entry) => entry.test(url, item, context)) || null;
+}
+
+function getVideoDownloadStrategyRule(item, context = {}) {
+  const url = item?.url || "";
+  return VIDEO_DOWNLOAD_STRATEGY_RULES.find((entry) => entry.test(url, item, context)) || null;
+}
+
+function getImageDownloadHeaderRule(item, context = {}) {
+  const url = item?.url || "";
+  return IMAGE_DOWNLOAD_HEADER_RULE_BUILDERS.find((entry) => entry.test(url, item, context)) || null;
+}
+
+function getVideoDownloadHeaderRule(item, context = {}) {
+  const url = item?.url || "";
+  return VIDEO_DOWNLOAD_HEADER_RULE_BUILDERS.find((entry) => entry.test(url, item, context)) || null;
+}
+
+function buildImageDownloadRuleContext(referer) {
+  const safeReferer = normalizeHttpUrl(referer || "") || "https://weibo.com/";
+  const safeOrigin = getOriginFromUrl(safeReferer) || "https://weibo.com";
+  return { safeReferer, safeOrigin };
+}
+
+function buildVideoDownloadRuleContext(referer) {
+  const safeReferer = normalizeHttpUrl(referer || "") || "https://weibo.com/";
+  const safeOrigin = getOriginFromUrl(safeReferer) || "https://weibo.com";
+  return { safeReferer, safeOrigin };
+}
+
+function buildSinaimgDownloadHeaderRule(context = {}) {
+  const { safeReferer } = buildImageDownloadRuleContext(context.referer);
+  return {
+    id: SINAIMG_DOWNLOAD_RULE_ID,
+    priority: 1,
+    action: {
+      type: "modifyHeaders",
+      requestHeaders: [
+        { header: "Referer", operation: "set", value: safeReferer },
+        { header: "Origin", operation: "set", value: "https://weibo.com" },
+      ],
+    },
+    condition: {
+      regexFilter: "^https?:\\/\\/(?:[^/]+\\.)?sinaimg\\.cn/",
+      resourceTypes: ["main_frame", "sub_frame", "image", "media", "xmlhttprequest", "other"],
+    },
+  };
+}
+
+function buildXiaohongshuDownloadHeaderRule(context = {}) {
+  const { safeReferer, safeOrigin } = buildImageDownloadRuleContext(context.referer);
+  return {
+    id: XIAOHONGSHU_DOWNLOAD_RULE_ID,
+    priority: 1,
+    action: {
+      type: "modifyHeaders",
+      requestHeaders: [
+        { header: "Referer", operation: "set", value: safeReferer },
+        { header: "Origin", operation: "set", value: safeOrigin },
+      ],
+    },
+    condition: {
+      regexFilter: "^https?:\\/\\/(?:[^/]+\\.)?xhscdn\\.com/",
+      resourceTypes: ["main_frame", "sub_frame", "image", "media", "xmlhttprequest", "other"],
+    },
+  };
+}
+
+function buildWeiboVideoDownloadHeaderRule(context = {}) {
+  const { safeReferer } = buildVideoDownloadRuleContext(context.referer);
+  return {
+    id: WEIBO_DOWNLOAD_RULE_ID,
+    priority: 1,
+    action: {
+      type: "modifyHeaders",
+      requestHeaders: [
+        { header: "Referer", operation: "set", value: safeReferer },
+        { header: "Origin", operation: "set", value: "https://weibo.com" },
+      ],
+    },
+    condition: {
+      regexFilter: "^https?:\\/\\/(?:[^/]+\\.)?(?:weibocdn\\.com|video\\.weibo\\.com)/",
+      resourceTypes: ["main_frame", "sub_frame", "media", "xmlhttprequest", "other"],
+    },
+  };
+}
+
+function buildXinpianchangVideoDownloadHeaderRule(context = {}) {
+  const { safeReferer, safeOrigin } = buildVideoDownloadRuleContext(context.referer);
+  return {
+    id: XINPIANCHANG_DOWNLOAD_RULE_ID,
+    priority: 1,
+    action: {
+      type: "modifyHeaders",
+      requestHeaders: [
+        { header: "Referer", operation: "set", value: safeReferer },
+        { header: "Origin", operation: "set", value: safeOrigin },
+      ],
+    },
+    condition: {
+      regexFilter: "^https?:\\/\\/(?:[^/]+\\.)?xpccdn\\.com/",
+      resourceTypes: ["main_frame", "sub_frame", "media", "xmlhttprequest", "other"],
+    },
+  };
 }
 
 async function requestExtraction(tab, maxIndexHint = 0, sampledUrls = [], sampledIndexes = [], extractionRange = "images") {
@@ -1999,12 +2135,39 @@ function isSinaimgUrl(url) {
   }
 }
 
+function isWeiboVideoUrl(url) {
+  try {
+    const parsed = new URL(url);
+    return /(^|\.)weibocdn\.com$/i.test(parsed.hostname) || /(^|\.)video\.weibo\.com$/i.test(parsed.hostname);
+  } catch {
+    return false;
+  }
+}
+
+function isXinpianchangVideoUrl(url) {
+  try {
+    const parsed = new URL(url);
+    return /(^|\.)xpccdn\.com$/i.test(parsed.hostname);
+  } catch {
+    return false;
+  }
+}
+
 function isXiaohongshuCdnUrl(url) {
   try {
     const parsed = new URL(url);
     return /(^|\.)xhscdn\.com$/i.test(parsed.hostname) || /(^|\.)snsimg\.cn$/i.test(parsed.hostname);
   } catch {
     return false;
+  }
+}
+
+function getOriginFromUrl(value) {
+  try {
+    const parsed = new URL(String(value || ""));
+    return `${parsed.protocol}//${parsed.host}`;
+  } catch {
+    return "";
   }
 }
 

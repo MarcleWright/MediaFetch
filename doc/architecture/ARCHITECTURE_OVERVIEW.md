@@ -55,6 +55,46 @@ Planned future type:
 
 - audio
 
+## Download Layer Status
+
+The extraction-side media boundary work is structurally ahead of the download side.
+
+Current project state should be read as:
+
+- extraction paths are closer to the intended media/domain separation
+- download paths are still transitional, but the shared executor now routes through explicit image/video download rule entry points instead of acting as the main host switchboard
+
+See:
+
+- [DOWNLOAD_LAYER_STATUS.md](D:/00_Projects_WSY/AI/Codex_Projects/MediaDownloader/doc/architecture/DOWNLOAD_LAYER_STATUS.md)
+- [DOWNLOAD_LAYER_REFACTOR_PLAN.md](D:/00_Projects_WSY/AI/Codex_Projects/MediaDownloader/doc/architecture/DOWNLOAD_LAYER_REFACTOR_PLAN.md)
+
+## Download Rule Classification Principle
+
+Domain extraction rules and domain download rules are related, but they are not required to exist as a pair.
+
+The classification rule is:
+
+- a domain may need a special extraction rule but still use generic download
+- a domain may use generic extraction but still need a special download rule
+- a domain should only gain a special download rule when its download behavior needs to be isolated from the generic path for correctness or long-term stability
+
+This means special download rules are not added for symmetry alone.
+
+They exist when a domain has durable download-specific needs such as:
+
+- request header requirements
+- referer or origin protection
+- domain-specific blob or direct strategy choice
+- host-specific download delivery quirks
+
+If a domain already downloads reliably through the generic path, it should stay generic until a real failure or repeated fragility proves that isolation is necessary.
+
+This principle protects the project from two opposite mistakes:
+
+1. over-creating domain download rules for sites that do not need them
+2. leaving fragile domains on the generic path so later generic changes accidentally break previously stable downloads
+
 ## Xiaohongshu Image Rule Note
 
 The current Xiaohongshu image special-domain strategy should prefer the note's isolated main media container before using broader heuristics.
@@ -81,6 +121,30 @@ Preferred order for Xiaohongshu video extraction:
 Current observed samples suggest that `stream_type 108` is often the maximum-size variant, but code should not hardcode `108` as the winner. The rule should rank all available stream variants instead.
 
 Observed Xiaohongshu samples also expose a structured video cover file id at `note.video.image.thumbnailFileid`. The Xiaohongshu video rule now uses the verified direct mapping `https://ci.xiaohongshu.com/<fileId>` for that field before falling back to generic poster guessing, and the helper stays scoped to the Xiaohongshu video special-domain path.
+
+## Weibo Video Rule Note
+
+The current Weibo video special-domain strategy should prefer page-embedded direct MP4 candidates over the generic video extractor when that structured or direct media data is present.
+
+Preferred order for Weibo video extraction:
+
+1. parse page-embedded `page_info`, `media_info`, or `mix_media_info` payloads when present
+2. collect direct single-file MP4 candidates from payloads, video elements, and media meta hints
+3. choose the best direct candidate by resolution and URL quality hints
+4. fall back to the generic video extractor only if no direct Weibo video candidate is usable
+
+The Weibo download path also applies host-specific request headers for `weibocdn.com` and related direct media hosts so direct downloads keep the expected `weibo.com` referer behavior.
+
+## Xinpianchang Video Rule Note
+
+The current Xinpianchang video special-domain strategy should prefer the page's direct MP4 candidate and keep downloads on a dedicated direct-download path with domain-specific request headers when the host protects direct media delivery.
+
+Preferred order for Xinpianchang video extraction:
+
+1. scan direct HTML5 video elements, sources, and direct MP4 hints on the page
+2. collect direct single-file MP4 candidates and rank the largest usable one first
+3. keep the selected item on a dedicated direct-download strategy for the extracted Xinpianchang media host
+4. fall back to the generic video extractor only if no direct Xinpianchang candidate is usable
 
 ## Data Flow
 

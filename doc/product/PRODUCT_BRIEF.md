@@ -20,6 +20,7 @@ The repository currently contains two delivery paths:
 - use the real browser session instead of trying to simulate logged-in state externally
 - preserve practical download workflows over perfect theoretical metadata
 - support domain-aware extraction while retaining generic fallback behavior
+- support domain-aware extraction for special cases such as `weibo` and `xinpianchang` video direct MP4 handling while retaining generic fallback behavior
 
 ## Core Workflows
 
@@ -30,6 +31,7 @@ The repository currently contains two delivery paths:
 5. preserve project metadata in `metadata.json`
 6. optionally export supported image results to Eagle or Lineage
 7. use a compact popup toolbar with icon-only settings/refresh actions and a segmented extraction-range control for images, videos, or both
+8. keep host-specific video downloads on direct single-file URLs when a domain rule has verified that path, including host-protected cases that need a domain-specific direct-download rule plus request headers
 
 ## Non-goals
 

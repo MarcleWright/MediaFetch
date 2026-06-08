@@ -28,6 +28,11 @@ const clipboardDownloadBtn = document.getElementById("clipboardDownloadBtn");
 const clipboardBoxEl = document.getElementById("clipboardBox");
 const convertHeicToPngInput = document.getElementById("settingConvertHeicToPng");
 const settingLinkDownloadInput = document.getElementById("settingLinkDownload");
+const PLUGIN_VERSION = "0.2.1";
+
+function getResponseContentBuildHash(debug = {}) {
+  return String(debug?.client?.contentBuildHash || debug?.contentBuildHash || "unknown");
+}
 const settingLineageInput = document.getElementById("settingLineage");
 const settingEagleInput = document.getElementById("settingEagle");
 const folderNameInput = document.getElementById("folderName");
@@ -434,7 +439,7 @@ function normalizeMediaItem(item, index = 0) {
   const mediaType = item?.mediaType === "video" ? "video" : "image";
   const url = normalizeHttpUrl(item?.url || "");
   const sourceUrl = normalizeHttpUrl(item?.sourceUrl || item?.url || "");
-  const downloadStrategy = String(item?.download?.strategy || (mediaType === "video" ? "direct" : "fetchBlob"));
+  const downloadStrategy = String(item?.download?.strategy || (mediaType === "video" ? "fetchBlob" : "fetchBlob"));
   const width = Number(item?.width || 0);
   const height = Number(item?.height || 0);
   const resolution = item?.resolution || (mediaType === "video" && width > 0 && height > 0 ? `${width} x ${height}` : "Unknown");
@@ -572,8 +577,8 @@ async function extractFromCurrentTab() {
       phase: "request-extraction",
       tabId: tab.id,
       tabUrl: tab.url || "",
-      version: "0.2.1",
-      contentBuildHash: "1155",
+      version: PLUGIN_VERSION,
+      contentBuildHash: "unknown",
       extractionRange,
     });
 
@@ -595,8 +600,8 @@ async function extractFromCurrentTab() {
       const responseClient = debug.client || {};
       debug.client = {
         ...responseClient,
-        version: "0.2.1",
-        contentBuildHash: "1155",
+        version: PLUGIN_VERSION,
+        contentBuildHash: getResponseContentBuildHash(debug),
         probeError: responseClient.probeError || "",
         instagramSamplingError: responseClient.instagramSamplingError || "",
         weiboSamplingError: responseClient.weiboSamplingError || "",
@@ -656,8 +661,9 @@ async function extractFromCurrentTab() {
       state.metadata = extracted.metadata || null;
       const debug = extracted.debug || {};
       debug.client = {
-        version: "0.2.1",
-        contentBuildHash: "1155",
+        ...(debug.client || {}),
+        version: PLUGIN_VERSION,
+        contentBuildHash: getResponseContentBuildHash(debug),
         probeError: "",
         instagramSamplingError: "",
         weiboSamplingError: "",
@@ -800,8 +806,9 @@ async function extractFromCurrentTab() {
     state.metadata = extracted.metadata || null;
     const debug = extracted.debug || {};
     debug.client = {
-      version: "0.2.1",
-      contentBuildHash: "1155",
+      ...(debug.client || {}),
+      version: PLUGIN_VERSION,
+      contentBuildHash: getResponseContentBuildHash(debug),
       probeError,
       instagramSamplingError,
       weiboSamplingError,
@@ -838,7 +845,8 @@ async function extractFromCurrentTab() {
     state.media = [];
     renderDebugInfo({
       phase: "error",
-      version: "0.2.1",
+      version: PLUGIN_VERSION,
+      contentBuildHash: "unknown",
       error: error instanceof Error ? error.message : String(error),
     });
     render();
@@ -1562,9 +1570,20 @@ async function downloadClipboardWeiboOriginal() {
   }
 }
 
-function prepareDownloads(urls, fileNames, pageUrl) {
+function prepareDownloads(mediaItems, fileNames, pageUrl) {
   return new Promise((resolve) => {
-    chrome.runtime.sendMessage({ type: "mediafetch:prepare-downloads", urls, fileNames, pageUrl }, () => {
+    const normalizedMediaItems = Array.isArray(mediaItems)
+      ? mediaItems.map((item) => {
+        if (typeof item === "string") {
+          return { url: item, mediaType: "image" };
+        }
+        return {
+          url: item?.url || "",
+          mediaType: item?.mediaType === "video" ? "video" : "image",
+        };
+      })
+      : [];
+    chrome.runtime.sendMessage({ type: "mediafetch:prepare-downloads", mediaItems: normalizedMediaItems, fileNames, pageUrl }, () => {
       resolve();
     });
   });
@@ -2185,7 +2204,7 @@ async function probeLineageConnection() {
   setLineageStatus("Running Lineage probe...", false);
   const settings = await getLineageSettings();
   const probe = {
-    contentBuildHash: "1155",
+    contentBuildHash: PLUGIN_VERSION,
     featureEnabled: lineageFeatureEnabled,
     baseUrl: settings.baseUrl,
     tokenPresent: !!settings.token,
