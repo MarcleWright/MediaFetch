@@ -1,5 +1,70 @@
 # Dev Log
 
+### 2026-06-09 Weibo Regression Fixed And Xinpianchang Capture Failed
+
+Status: In Progress
+
+Summary:
+
+- validated that the current `xinpianchang` `mediaCapture` pass still fails because `HTMLMediaElement.captureStream()` is blocked for cross-origin media data
+- confirmed that this makes the browser-only media-capture executor an unaccepted final solution for the domain
+- found and fixed a separate `weibo` regression where the built Weibo video item had drifted back to `download.strategy: "direct"`, which can degrade into `001.htm`
+
+Links:
+
+- `doc/ai/tasks/2026-06-09_01_xinpianchang-media-request-download-executor.md`
+- `doc/ai/tasks/2026-06-08_01_weibo-video-domain-rule.md`
+- `doc/engineering/KNOWN_ISSUES.md`
+
+### 2026-06-09 Xinpianchang Media-Capture Executor Implemented
+
+Status: In Progress
+
+Summary:
+
+- removed the failed `xinpianchang` bridge-style page download path so the domain no longer mixes multiple dead-end executor experiments
+- implemented a dedicated `mediaCapture` video download strategy for `xinpianchang` based on browser-native playback capture plus `MediaRecorder`
+- kept the task open because the new executor still needs real-page end-to-end validation before the result can be accepted
+
+Links:
+
+- `doc/ai/tasks/2026-06-09_01_xinpianchang-media-request-download-executor.md`
+- `chrome-plugin/background.js`
+- `chrome-plugin/content.js`
+- `chrome-plugin/popup.js`
+
+### 2026-06-09 Xinpianchang Playback Probe Confirmed Media Request Path
+
+Status: Done
+
+Summary:
+
+- added a temporary `xinpianchang` network probe to compare extracted video URLs against real browser playback requests
+- confirmed that the tested `xinpianchang` page plays the same extracted MP4 URL through `type: media` requests with `206 Partial Content`
+- recorded that the next fix direction must move from `direct` or `fetch` variants to a media-request-based special download executor
+
+Links:
+
+- `doc/ai/tasks/2026-06-09_01_xinpianchang-media-request-download-executor.md`
+- `doc/engineering/KNOWN_ISSUES.md`
+- `doc/architecture/ARCHITECTURE_OVERVIEW.md`
+
+### 2026-06-09 Xinpianchang Failure Chain Documented
+
+Status: Done
+
+Summary:
+
+- recorded that `xinpianchang` extraction is currently correct but download execution is still the true blocker
+- documented the now-confirmed failure chain: `001.htm` false-success, `403` on protected host fetch, CSP blocking inline page injection, `Failed to fetch` in main-world page fetch, and `403 Forbidden` on direct navigation to the extracted media URL
+- captured the conclusion that future work should start from a stronger bypass design instead of repeating small shared `direct` or `fetchBlob` tweaks
+
+Links:
+
+- `doc/ai/tasks/2026-06-08_02_xinpianchang-video-domain-rule.md`
+- `doc/engineering/KNOWN_ISSUES.md`
+- `doc/architecture/ARCHITECTURE_OVERVIEW.md`
+
 ### 2026-06-09 Weibo And Xinpianchang Video Download Fix Pass Started
 
 Status: In Progress

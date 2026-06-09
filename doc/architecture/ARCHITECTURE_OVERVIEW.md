@@ -61,32 +61,32 @@ The current Chrome plugin should be read with this rule breakdown:
 
 ```text
 content.js
-├─ image extraction
-│  ├─ generic image extraction
-│  └─ image domain rules
-│     ├─ instagram
-│     ├─ behance
-│     ├─ xiaohongshu
-│     ├─ weibo
-│     └─ weixin
-└─ video extraction
-   ├─ generic video extraction
-   └─ video domain rules
-      ├─ xiaohongshu
-      ├─ weibo
-      └─ xinpianchang
+- image extraction
+  - generic image extraction
+  - image domain rules
+    - instagram
+    - behance
+    - xiaohongshu
+    - weibo
+    - weixin
+- video extraction
+  - generic video extraction
+  - video domain rules
+    - xiaohongshu
+    - weibo
+    - xinpianchang
 
 background.js
-├─ shared download queue shell
-├─ generic download executors
-│  ├─ direct
-│  └─ fetchBlob
-├─ image download rules
-│  ├─ sinaimg
-│  └─ xiaohongshu cdn
-└─ video download rules
-   ├─ weibo
-   └─ xinpianchang
+- shared download queue shell
+- generic download executors
+  - direct
+  - fetchBlob
+- image download rules
+  - sinaimg
+  - xiaohongshu cdn
+- video download rules
+  - weibo
+  - xinpianchang
 ```
 
 This means the image extraction side already has explicit platform-aware handling for `instagram`, `behance`, `xiaohongshu`, `weibo`, and `weixin` at the same structural level.
@@ -184,14 +184,33 @@ The Weibo download path also applies host-specific request headers for `weibocdn
 
 ## Xinpianchang Video Rule Note
 
-The current Xinpianchang video special-domain strategy should prefer the page's direct MP4 candidate and keep downloads on a dedicated direct-download path with domain-specific request headers when the host protects direct media delivery.
+The current Xinpianchang video special-domain strategy should prefer the page's direct MP4 candidate and treat download execution as a dedicated media-request problem instead of a normal direct-download or fetch problem.
 
 Preferred order for Xinpianchang video extraction:
 
 1. scan direct HTML5 video elements, sources, and direct MP4 hints on the page
 2. collect direct single-file MP4 candidates and rank the largest usable one first
-3. keep the selected item on a dedicated direct-download strategy for the extracted Xinpianchang media host
+3. keep the selected item on a dedicated Xinpianchang video download-rule path
 4. fall back to the generic video extractor only if no direct Xinpianchang candidate is usable
+
+Current validated failure evidence for Xinpianchang download work:
+
+- extraction can correctly identify the maximum-size direct MP4 candidate on the page
+- shared direct download can degrade into saved webpage content such as `001.htm`
+- background or offscreen `fetch(...)` against the protected `xpccdn` media host can return `403`
+- inline page-context script injection can be blocked by site CSP
+- main-world page `fetch(...)` can still fail with `Failed to fetch`
+- direct navigation to the extracted media URL can still return `403 Forbidden`
+- a real playback probe on the tested page shows the browser successfully uses the same extracted MP4 URL through `type: media` requests with `206 Partial Content`
+- the successful playback requests expose `Accept-Ranges: bytes` and `Content-Range: bytes .../...`, which means the browser is using a range-based media delivery path instead of a simple file download path
+
+Current architectural conclusion:
+
+- the unsolved part is not extraction
+- the blocker is the host-protected download execution path
+- future Xinpianchang work should stop treating the host as a normal `direct` or `fetch` download target
+- the current MVP implementation pass now tries a browser-native media-capture executor for `xinpianchang` instead of another small variation of shared `direct` or shared `fetchBlob`
+- that executor is still pending real validation and currently records a playable `webm` output rather than preserving the original MP4 bytes directly
 
 ## Data Flow
 

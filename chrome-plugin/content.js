@@ -582,7 +582,11 @@ const PLUGIN_VERSION = "0.2.1";
       score: Number(item.score || 0),
       area: Number(item.area || 0),
       download: {
-        strategy: isSinaimgUrl(item.url) || isXiaohongshuCdnUrl(item.url) ? "fetchBlob" : "direct",
+        strategy: isSinaimgUrl(item.url)
+          ? "fetchBlob"
+          : isXiaohongshuCdnUrl(item.url)
+            ? "xiaohongshuImageFetchBlob"
+            : "direct",
       },
     }));
   }
@@ -893,6 +897,20 @@ const PLUGIN_VERSION = "0.2.1";
     return /\.m3u8(?:$|[?#])/i.test(String(url || "")) || /\.mpd(?:$|[?#])/i.test(String(url || ""));
   }
 
+  function isXinpianchangVideoUrl(url) {
+    const normalized = normalizeUrl(url);
+    if (!normalized) {
+      return false;
+    }
+
+    try {
+      const parsed = new URL(normalized);
+      return /(^|\.)xpccdn\.com$/i.test(parsed.hostname || "") && /\.(mp4|m4v|mov)(?:$|[?#])/i.test(normalized);
+    } catch (_error) {
+      return /xpccdn\.com/i.test(normalized) && /\.(mp4|m4v|mov)(?:$|[?#])/i.test(normalized);
+    }
+  }
+
   function collectVideoUrlsFromText(value) {
     const text = String(value || "");
     if (!text) {
@@ -943,6 +961,15 @@ const PLUGIN_VERSION = "0.2.1";
   }
 
   function selectVideoDownloadStrategy(url) {
+    if (isWeiboVideoUrl(url)) {
+      return "weiboVideoDirect";
+    }
+    if (isXiaohongshuCdnUrl(url)) {
+      return "xiaohongshuVideoFetchBlob";
+    }
+    if (isXinpianchangVideoUrl(url)) {
+      return "mediaCapture";
+    }
     return isManifestVideoUrl(url) ? "direct" : "fetchBlob";
   }
 
@@ -2383,7 +2410,7 @@ const PLUGIN_VERSION = "0.2.1";
       score: candidate.score,
       area: Number(candidate.width || 0) * Number(candidate.height || 0),
       download: {
-        strategy: "direct",
+        strategy: "weiboVideoDirect",
         allowDirectFallback: false,
       },
     };
@@ -2633,6 +2660,7 @@ const PLUGIN_VERSION = "0.2.1";
       area: Number(candidate.width || 0) * Number(candidate.height || 0),
       download: {
         strategy: selectVideoDownloadStrategy(candidate.url),
+        outputExtension: isXinpianchangVideoUrl(candidate.url) ? "webm" : "",
         allowDirectFallback: false,
       },
     };
@@ -5510,7 +5538,7 @@ const PLUGIN_VERSION = "0.2.1";
       score: candidate.score,
       area: candidate.width * candidate.height,
       download: {
-        strategy: "fetchBlob",
+        strategy: "xiaohongshuVideoFetchBlob",
       },
     };
   }

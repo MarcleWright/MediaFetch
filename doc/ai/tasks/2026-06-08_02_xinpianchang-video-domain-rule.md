@@ -119,10 +119,48 @@ Expected documentation updates after implementation:
 
 Attempted twice, and still reopened after validation failure.
 
-The current implementation is not yet accepted because real downloads can still save `001.htm` / webpage content instead of the media file.
+The current implementation is not yet accepted because real downloads still fail before a stable local media file is saved.
 
 The current code now has a dedicated `xinpianchang` extract rule and a dedicated `xinpianchang` download-rule entry.
 
-The latest pass changes the Xinpianchang video download path back to `fetchBlob`-first, rejects HTML payloads before saving, and disables silent direct-download fallback for this domain so failed host-protected requests no longer degrade into saved webpage content.
+Observed failure chain across the current passes:
+
+1. shared direct download could degrade into `001.htm` / webpage content
+2. `fetchBlob`-first execution removed that false-success mode, but background fetch still hit `403`
+3. offscreen blob-download execution exposed a real async implementation bug once, which was fixed, but the real host restriction remained
+4. inline page-context script injection was blocked by site CSP
+5. external bridge-script loading did not stabilize reliably enough to become the accepted path
+6. main-world page `fetch(...)` still failed with `Failed to fetch`
+7. direct navigation to the extracted `xpccdn` media URL still returned `403 Forbidden`
+
+What this means structurally:
+
+- extraction is currently the solved part for `xinpianchang`
+- the blocker is specifically end-to-end download execution against the protected media host
+- header-only fixes are not sufficient
+- generic `direct` and generic `fetchBlob` are both insufficient as final solutions for this host
+- future work should start from a stronger domain-specific bypass path such as iframe/browser-context bypass or a helper-assisted path instead of repeating small shared-executor tweaks
 
 The next pass must re-verify the full end-to-end download path against the actual extracted media host from the page-attached video URL. The current validated sample resolves to `us-xpc5-l.xpccdn.com`.
+
+## Context Delta
+
+### Keep
+
+- `xinpianchang` already demonstrates that generic extraction can find the right file while generic download still fails
+
+### Changed
+
+- the validated failure point is now narrowed to protected download execution against the extracted `xpccdn` media host
+- the repository now has concrete evidence that inline page injection, main-world `fetch`, and direct navigation can all still fail against this host
+- a later playback probe now confirms the same extracted MP4 URL succeeds in the browser through `type: media` requests with `206 Partial Content`
+
+### Avoid
+
+- do not retry small header-only or generic-executor-only tweaks as if the failure were still ambiguous
+- do not treat a selected correct MP4 URL as proof that browser-only saving is already solved
+
+### Follow-up
+
+- the next implementation pass for `xinpianchang` should begin from a media-request-based special download executor, not another minor variation of shared `direct` or shared `fetchBlob`
+- see [2026-06-09_01_xinpianchang-media-request-download-executor.md](D:/00_Projects_WSY/AI/Codex_Projects/MediaDownloader/doc/ai/tasks/2026-06-09_01_xinpianchang-media-request-download-executor.md)

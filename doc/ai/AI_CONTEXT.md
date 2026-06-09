@@ -5,7 +5,7 @@
 1. maintain image/video boundary discipline in the Chrome plugin
 2. keep the restored Xiaohongshu image download path stable after the download-layer cleanup
 3. package the current architecture and documentation cleanup as a stable branch snapshot before the next video-download pass
-4. finish the reopened `weibo` and `xinpianchang` end-to-end video download fixes and revalidate them on real pages
+4. validate the new `xinpianchang` media-capture executor before attempting any further executor redesign
 5. keep the download-layer boundary cleanup aligned with the explicit image/video rule entry model now in `chrome-plugin/background.js`
 6. keep `doc/` as the durable documentation root for ongoing work
 7. preserve the current domain-rule rollout decisions as stable project memory
@@ -39,12 +39,15 @@
 - the target fix direction for that debt is documented in `doc/architecture/DOWNLOAD_LAYER_REFACTOR_PLAN.md`
 - the next download-layer implementation focus is image-domain download migration, with Xiaohongshu image first and Sinaimg / Weibo image second
 - `behance` currently stays on the generic image path unless a real failure proves otherwise
-- current video download fix direction is `fetchBlob`-first with HTML-payload rejection and no silent direct fallback for `weibo` and `xinpianchang`
+- current video download fix direction is `fetchBlob`-first with HTML-payload rejection and no silent direct fallback for `weibo`; a June 9 regression briefly pushed Weibo back to `direct`, and the immediate fix is to keep the built Weibo item on `fetchBlob`
 - current Xiaohongshu image direction is main-container first, structured `imageList` second, visual clustering last
 - current Xiaohongshu video direction is `mediaV2/stream` first, rank all variants, choose maximum size, then fall back to generic scanning
 - current Xiaohongshu video cover direction is the verified direct `https://ci.xiaohongshu.com/<fileId>` mapping from `note.video.image.thumbnailFileid`, then existing poster fallbacks
 - `weibo` video extraction and download rule entries exist, but end-to-end video download is still deferred because current local validation does not yet confirm stable successful file saving
-- `xinpianchang` video rollout is reopened because end-to-end download verification still fails even after separating its download rule from Weibo, and the current validated sample resolves to `us-xpc5-l.xpccdn.com`
+- `xinpianchang` video rollout is reopened because end-to-end download verification still fails even after multiple executor variants, and the current validated sample resolves to `us-xpc5-l.xpccdn.com`
+- current `xinpianchang` evidence shows that the host-protected `xpccdn` URL can still reject background fetch, page-main-world fetch, and direct navigation, while a real playback probe confirms the same URL succeeds through browser-native `type: media` requests with `206 Partial Content`
+- the current `xinpianchang` implementation pass proved that browser-native playback can reach the protected media, but `MediaRecorder + captureStream()` still fails because the media element is treated as cross-origin data
+- that result makes the browser-only media-capture executor an unaccepted final solution and strengthens the case for a helper-assisted next phase
 - Eagle and Lineage remain image-only in the current phase
 
 ## Suggested Read Order

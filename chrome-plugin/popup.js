@@ -462,7 +462,8 @@ function normalizeMediaItem(item, index = 0) {
     score: Number(item?.score || 0),
     area: Number(item?.area || 0),
     download: {
-      strategy: downloadStrategy === "fetchBlob" ? "fetchBlob" : "direct",
+      strategy: downloadStrategy || (mediaType === "video" ? "fetchBlob" : "direct"),
+      outputExtension: String(item?.download?.outputExtension || "").trim(),
       allowDirectFallback: item?.download?.allowDirectFallback !== false,
     },
   };
@@ -622,6 +623,7 @@ async function extractFromCurrentTab() {
         instagramSourceUrl: originalTabUrl,
         extractionRange,
       };
+      await attachXinpianchangNetworkProbe(debug, tab, originalTabUrl);
       renderDebugInfo(debug);
 
       const currentFolderInput = folderNameInput.value.trim();
@@ -690,6 +692,7 @@ async function extractFromCurrentTab() {
       if (debug.weibo && albumDebug) {
         debug.weibo.album = albumDebug;
       }
+      await attachXinpianchangNetworkProbe(debug, tab, originalTabUrl);
       renderDebugInfo(debug);
 
       const currentFolderInput = folderNameInput.value.trim();
@@ -830,6 +833,7 @@ async function extractFromCurrentTab() {
       weiboAlbumSourceUrl: originalTabUrl,
       extractionRange,
     };
+    await attachXinpianchangNetworkProbe(debug, tab, originalTabUrl);
     renderDebugInfo(debug);
 
     const currentFolderInput = folderNameInput.value.trim();
@@ -874,6 +878,50 @@ async function requestExtraction(tab, maxIndexHint = 0, sampledUrls = [], sample
     } catch {
       throw new Error("Could not connect to the page. Reload the tab once and try again.");
     }
+  }
+}
+
+async function attachXinpianchangNetworkProbe(debug, tab, pageUrl) {
+  if (!tab?.id || !debug || !isXinpianchangUrl(pageUrl)) {
+    return;
+  }
+
+  try {
+    const response = await chrome.runtime.sendMessage({
+      type: "mediafetch:get-xinpianchang-network-probe",
+      tabId: tab.id,
+      pageUrl: String(pageUrl || ""),
+    });
+    if (!response?.ok) {
+      return;
+    }
+
+    debug.video = debug.video || {};
+    debug.video.xinpianchangNetworkProbe = response.probe || {
+      available: false,
+      reason: "probe-response-empty",
+      entries: [],
+    };
+  } catch (error) {
+    debug.video = debug.video || {};
+    debug.video.xinpianchangNetworkProbe = {
+      available: false,
+      reason: error instanceof Error ? error.message : String(error),
+      entries: [],
+    };
+  }
+}
+
+function isXinpianchangUrl(value) {
+  const normalized = normalizeHttpUrl(value || "");
+  if (!normalized) {
+    return false;
+  }
+
+  try {
+    return /(^|\.)xinpianchang\.com$/i.test(new URL(normalized).hostname || "");
+  } catch (_error) {
+    return false;
   }
 }
 
