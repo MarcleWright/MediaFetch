@@ -625,7 +625,7 @@ const PLUGIN_VERSION = "0.2.1";
       }
 
       const xiaohongshuVideoDebug = domainResult?.debug?.xiaohongshu || (isXiaohongshuHost() ? collectXiaohongshuVideoDebug() : null);
-      const weiboVideoDebug = domainResult?.debug?.weibo || (isWeiboHost() ? collectWeiboVideoDebug() : null);
+      const weiboVideoDebug = domainResult?.debug?.weibo || null;
       const xinpianchangVideoDebug = domainResult?.debug?.xinpianchang || (isXinpianchangHost() ? collectXinpianchangVideoDebug() : null);
       const genericResult = await extractGenericVideos();
       if (xiaohongshuVideoDebug) {
@@ -1964,10 +1964,11 @@ const PLUGIN_VERSION = "0.2.1";
     };
   }
 
-  function collectWeiboVideoMedia() {
+  async function collectWeiboVideoMedia() {
     const html = document.documentElement?.innerHTML || "";
     const statusId = extractWeiboStatusId(location.href);
     const payload = extractWeiboVideoPayloadFromHtml(html);
+    const qualityProbe = await collectWeiboHighestQualityProbe();
     const candidates = [];
     const seen = new Set();
     const rejectedPreview = [];
@@ -2034,6 +2035,21 @@ const PLUGIN_VERSION = "0.2.1";
     };
 
     collectWeiboVideoCandidatesFromPayload(payload, push);
+
+    if (qualityProbe?.selectedUrl) {
+      push(qualityProbe.selectedUrl, {
+        source: "quality-menu",
+        sourceType: "dom",
+        label: qualityProbe.targetLabel || "",
+        hostHint: qualityProbe.currentQualityLabel || "",
+        posterUrl: payload.posterUrl || "",
+        previewUrl: payload.previewUrl || "",
+        contentType: payload.contentType || "",
+        duration: Number(qualityProbe.duration || 0),
+        width: Number(qualityProbe.width || 0),
+        height: Number(qualityProbe.height || 0),
+      });
+    }
 
     document.querySelectorAll("video").forEach((video) => {
       const poster = normalizeUrl(video.getAttribute("poster") || "");
@@ -2129,14 +2145,266 @@ const PLUGIN_VERSION = "0.2.1";
             label: selectedCandidate.label,
             hostHint: selectedCandidate.hostHint,
           } : null,
+          qualityProbe: qualityProbe?.debug || null,
           fallbackToGeneric: !selectedCandidate,
         },
       },
     };
   }
 
-  function collectWeiboVideoDebug() {
-    return collectWeiboVideoMedia().debug?.weibo || null;
+  async function collectWeiboHighestQualityProbe() {
+    const video = findWeiboPrimaryVideoElement();
+    if (!video) {
+      return {
+        selectedUrl: "",
+        width: 0,
+        height: 0,
+        duration: 0,
+        targetLabel: "",
+        currentQualityLabel: "",
+        debug: {
+          available: false,
+          reason: "no-video-element",
+          items: [],
+        },
+      };
+    }
+
+    const qualityRoot = findWeiboQualityControlRoot(video);
+    if (!qualityRoot) {
+      return {
+        selectedUrl: normalizeVideoUrl(video.currentSrc || video.src || ""),
+        width: Number(video.videoWidth || 0),
+        height: Number(video.videoHeight || 0),
+        duration: Number(video.duration || 0),
+        targetLabel: "",
+        currentQualityLabel: "",
+        debug: {
+          available: false,
+          reason: "no-quality-menu",
+          items: [],
+        },
+      };
+    }
+
+    const items = collectWeiboQualityMenuItems(qualityRoot);
+    const rankedItems = items.slice().sort((left, right) => right.rank - left.rank);
+    const selectedItem = items.find((item) => item.selected) || null;
+    const targetItem = rankedItems[0] || null;
+    const currentQualityLabel = readWeiboQualityValue(qualityRoot);
+    const beforeUrl = normalizeVideoUrl(video.currentSrc || video.src || "");
+    const beforeDimensions = inferWeiboVideoDimensions(beforeUrl, selectedItem?.text || currentQualityLabel || "");
+
+    const probeDebug = {
+      available: true,
+      reason: "",
+      beforeUrl,
+      beforeQualityLabel: currentQualityLabel || (selectedItem?.text || ""),
+      targetLabel: targetItem?.text || "",
+      switched: false,
+      restored: false,
+      switchSucceeded: false,
+      items: items.map((item) => ({
+        text: item.text,
+        rank: item.rank,
+        selected: item.selected,
+      })),
+      afterUrl: beforeUrl,
+      afterQualityLabel: currentQualityLabel || "",
+    };
+
+    if (!targetItem) {
+      probeDebug.reason = "no-quality-items";
+      return {
+        selectedUrl: beforeUrl,
+        width: beforeDimensions.width || Number(video.videoWidth || 0),
+        height: beforeDimensions.height || Number(video.videoHeight || 0),
+        duration: Number(video.duration || 0),
+        targetLabel: "",
+        currentQualityLabel,
+        debug: probeDebug,
+      };
+    }
+
+    let resolvedUrl = beforeUrl;
+    let resolvedLabel = currentQualityLabel || selectedItem?.text || "";
+    let resolvedDimensions = beforeDimensions;
+
+    if (!selectedItem || normalizeWeiboQualityLabel(selectedItem.text) !== normalizeWeiboQualityLabel(targetItem.text)) {
+      const switchSucceeded = await switchWeiboVideoQuality(qualityRoot, targetItem);
+      probeDebug.switched = true;
+      probeDebug.switchSucceeded = switchSucceeded;
+      await waitForWeiboVideoQualityState(video, targetItem, beforeUrl, qualityRoot);
+      resolvedUrl = normalizeVideoUrl(video.currentSrc || video.src || "");
+      resolvedLabel = readWeiboQualityValue(qualityRoot) || targetItem.text;
+      resolvedDimensions = inferWeiboVideoDimensions(resolvedUrl, targetItem.text);
+
+      if (selectedItem) {
+        const restored = await switchWeiboVideoQuality(qualityRoot, selectedItem);
+        probeDebug.restored = restored;
+        await waitForWeiboVideoQualityState(video, selectedItem, resolvedUrl, qualityRoot);
+      }
+    }
+
+    probeDebug.afterUrl = resolvedUrl;
+    probeDebug.afterQualityLabel = resolvedLabel;
+
+    return {
+      selectedUrl: resolvedUrl,
+      width: resolvedDimensions.width || Number(video.videoWidth || 0),
+      height: resolvedDimensions.height || Number(video.videoHeight || 0),
+      duration: Number(video.duration || 0),
+      targetLabel: targetItem.text,
+      currentQualityLabel: resolvedLabel,
+      debug: probeDebug,
+    };
+  }
+
+  function findWeiboPrimaryVideoElement() {
+    return document.querySelector('.video-js video, video.vjs-tech, video');
+  }
+
+  function findWeiboQualityControlRoot(video) {
+    const playerRoot = video?.closest('.video-js') || null;
+    if (playerRoot) {
+      const localQualityRoot = playerRoot.querySelector('.vjs-quality.vjs-menu-button');
+      if (localQualityRoot) {
+        return localQualityRoot;
+      }
+    }
+    return document.querySelector('.vjs-quality.vjs-menu-button');
+  }
+
+  function collectWeiboQualityMenuItems(qualityRoot) {
+    return Array.from(qualityRoot?.querySelectorAll('.vjs-menu-item') || [])
+      .map((item) => {
+        const text = normalizeWeiboQualityLabel(item.textContent || "");
+        return {
+          node: item,
+          text,
+          selected: item.classList.contains('vjs-selected') || item.getAttribute('aria-checked') === 'true',
+          rank: scoreWeiboQualityLabel(text),
+        };
+      })
+      .filter((item) => item.text && item.rank > 0);
+  }
+
+  function normalizeWeiboQualityLabel(value) {
+    return String(value || "").replace(/\s*,\s*选择\s*$/u, "").replace(/\s+/g, " ").trim();
+  }
+
+  function scoreWeiboQualityLabel(label) {
+    const text = normalizeWeiboQualityLabel(label);
+    if (/4k/i.test(text)) return 5000;
+    if (/2k/i.test(text)) return 4000;
+    if (/2160p/i.test(text)) return 3800;
+    if (/1440p/i.test(text)) return 3400;
+    if (/1080p/i.test(text)) return 3000;
+    if (/720p/i.test(text)) return 2000;
+    if (/480p/i.test(text)) return 1000;
+    return 0;
+  }
+
+  function readWeiboQualityValue(qualityRoot) {
+    return normalizeWeiboQualityLabel(
+      qualityRoot?.querySelector('.vjs-quality-value')?.textContent || ""
+    );
+  }
+
+  async function switchWeiboVideoQuality(qualityRoot, targetItem) {
+    if (!qualityRoot || !targetItem?.node) {
+      return false;
+    }
+
+    const button = qualityRoot.querySelector('button');
+    const menu = qualityRoot.querySelector('.vjs-menu');
+    try {
+      qualityRoot.classList.add('vjs-hover');
+      if (button) {
+        button.setAttribute('aria-expanded', 'true');
+        dispatchWeiboMouseEvent(button, 'mouseenter');
+        dispatchWeiboMouseEvent(button, 'mouseover');
+        dispatchWeiboMouseEvent(button, 'mousemove');
+        dispatchWeiboMouseEvent(button, 'click');
+      }
+      if (menu) {
+        menu.classList.remove('vjs-hidden');
+      }
+      dispatchWeiboMouseEvent(targetItem.node, 'mouseenter');
+      dispatchWeiboMouseEvent(targetItem.node, 'mouseover');
+      dispatchWeiboMouseEvent(targetItem.node, 'mousemove');
+      dispatchWeiboMouseEvent(targetItem.node, 'mousedown');
+      dispatchWeiboMouseEvent(targetItem.node, 'mouseup');
+      dispatchWeiboMouseEvent(targetItem.node, 'click');
+      await waitForTimeout(120);
+      return true;
+    } catch {
+      return false;
+    } finally {
+      if (menu) {
+        menu.classList.add('vjs-hidden');
+      }
+      if (button) {
+        button.setAttribute('aria-expanded', 'false');
+      }
+      qualityRoot.classList.remove('vjs-hover');
+    }
+  }
+
+  function dispatchWeiboMouseEvent(target, type) {
+    if (!target) {
+      return;
+    }
+    target.dispatchEvent(new MouseEvent(type, {
+      bubbles: true,
+      cancelable: true,
+      composed: true,
+      view: window,
+    }));
+  }
+
+  async function waitForWeiboVideoQualityState(video, targetItem, previousUrl, qualityRoot) {
+    const targetLabel = normalizeWeiboQualityLabel(targetItem?.text || "");
+    const previous = normalizeVideoUrl(previousUrl || "");
+    for (let attempt = 0; attempt < 40; attempt += 1) {
+      const currentUrl = normalizeVideoUrl(video?.currentSrc || video?.src || "");
+      const currentQuality = readWeiboQualityValue(qualityRoot);
+      if (
+        (targetLabel && currentQuality && normalizeWeiboQualityLabel(currentQuality) === targetLabel) ||
+        (currentUrl && currentUrl !== previous)
+      ) {
+        return true;
+      }
+      await waitForTimeout(100);
+    }
+    return false;
+  }
+
+  function inferWeiboVideoDimensions(url, label = "") {
+    const normalizedUrl = String(url || "");
+    const normalizedLabel = normalizeWeiboQualityLabel(label);
+    const result = { width: 0, height: 0 };
+
+    const templateMatch = normalizedUrl.match(/[?&]template=(\d+)x(\d+)(?:\.|&|$)/i);
+    if (templateMatch) {
+      result.width = Number(templateMatch[1] || 0);
+      result.height = Number(templateMatch[2] || 0);
+      return result;
+    }
+
+    if (/4k/i.test(normalizedLabel)) return { width: 3840, height: 2160 };
+    if (/2k/i.test(normalizedLabel)) return { width: 2560, height: 1440 };
+    if (/1080p/i.test(normalizedLabel)) return { width: 1920, height: 1080 };
+    if (/720p/i.test(normalizedLabel)) return { width: 1280, height: 720 };
+    if (/480p/i.test(normalizedLabel)) return { width: 854, height: 480 };
+
+    return result;
+  }
+
+  function waitForTimeout(timeoutMs) {
+    return new Promise((resolve) => {
+      window.setTimeout(resolve, Math.max(0, Number(timeoutMs || 0)));
+    });
   }
 
   function extractWeiboVideoPayloadFromHtml(html) {

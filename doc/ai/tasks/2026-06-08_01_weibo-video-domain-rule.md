@@ -120,7 +120,9 @@ Expected documentation updates after implementation:
 Reopened for the next iteration.
 
 - the current branch keeps the explicit Weibo video extraction and download rule entries
-- this pass changes the Weibo video download path to `fetchBlob`-first and disables silent direct-download fallback for the domain so failed downloads no longer degrade into saved webpage content
-- the background fetch path now rejects HTML payloads before saving, which should block `001.htm`-style false-success results if the host returns a page instead of media
+- live Chrome inspection confirmed that the tested Weibo player exposes a real quality menu with at least `4K`, `2K`, `1080p`, `720p`, and `480p`, even when the static `<video src>` only reflects the currently playing quality
+- the Weibo extractor has therefore moved beyond "read the current `video.src`" and now probes the quality menu so it can switch to the highest available quality, read the resulting real MP4 URL, and then restore the original quality when possible
+- download execution also moved past the earlier `fetchBlob`-first / direct-fallback debate: pure page-context download can work but loses extension folder routing, while direct extension-side media download can still re-enter protected-host failure modes
+- the current Weibo download direction is now page-context blob acquisition plus extension-side final save, so successful page-context retrieval can still end in the target extension folder
 - static checks and rule-structure validation were completed
-- end-to-end local video download still needs real browser-page validation before the task can be marked complete
+- final closure still depends on repeated real browser-page validation that confirms both highest-quality extraction and correct foldered local file saving

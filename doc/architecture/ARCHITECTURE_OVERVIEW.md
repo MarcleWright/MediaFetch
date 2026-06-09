@@ -176,11 +176,22 @@ The current Weibo video special-domain strategy should prefer page-embedded dire
 Preferred order for Weibo video extraction:
 
 1. parse page-embedded `page_info`, `media_info`, or `mix_media_info` payloads when present
-2. collect direct single-file MP4 candidates from payloads, video elements, and media meta hints
-3. choose the best direct candidate by resolution and URL quality hints
-4. fall back to the generic video extractor only if no direct Weibo video candidate is usable
+2. if a Weibo player quality menu is present, inspect available quality entries and prefer the highest available option before trusting the current `video.src`
+3. collect direct single-file MP4 candidates from payloads, quality-switch results, video elements, and media meta hints
+4. choose the best direct candidate by resolution and URL quality hints
+5. fall back to the generic video extractor only if no direct Weibo video candidate is usable
 
-The Weibo download path also applies host-specific request headers for `weibocdn.com` and related direct media hosts so direct downloads keep the expected `weibo.com` referer behavior.
+Important implementation note:
+
+- the static DOM can expose only the currently playing quality even when the Weibo player menu already contains higher qualities such as `4K`, `2K`, `1080p`, `720p`, and `480p`
+- this means a stable max-quality rule cannot rely only on the first visible `video.src`
+- it must prefer the player quality menu when available
+
+The Weibo download path still applies host-specific request headers for `weibocdn.com` and related direct media hosts, but current download execution should be read as a hybrid domain-specific path:
+
+1. fetch the protected media bytes in page context when necessary
+2. return a `blob:` URL to the extension side
+3. let the extension download layer perform the final save so folder routing and filename control remain intact
 
 ## Xinpianchang Video Rule Note
 

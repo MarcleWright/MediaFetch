@@ -1074,20 +1074,7 @@ async function downloadWeiboVideoWithDirectStrategy(item, filename, _context = {
   const results = await chrome.scripting.executeScript({
     target: { tabId: tab.id },
     world: "MAIN",
-    func: async (url, downloadName) => {
-      const triggerBlobDownload = (blob, suggestedName) => {
-        const objectUrl = URL.createObjectURL(blob);
-        const anchor = document.createElement("a");
-        anchor.href = objectUrl;
-        anchor.download = String(suggestedName || "video.mp4");
-        anchor.rel = "noopener";
-        anchor.style.display = "none";
-        (document.documentElement || document.body || document.head).appendChild(anchor);
-        anchor.click();
-        anchor.remove();
-        window.setTimeout(() => URL.revokeObjectURL(objectUrl), 60000);
-      };
-
+    func: async (url) => {
       const fetchBlobViaXhr = (resourceUrl) => new Promise((resolve, reject) => {
         try {
           const xhr = new XMLHttpRequest();
@@ -1132,12 +1119,15 @@ async function downloadWeiboVideoWithDirectStrategy(item, filename, _context = {
           throw new Error("Weibo page blob download produced an empty file.");
         }
 
-        triggerBlobDownload(blob, downloadName);
+        const objectUrl = URL.createObjectURL(blob);
+        window.__mediafetchBlobUrls = Array.isArray(window.__mediafetchBlobUrls) ? window.__mediafetchBlobUrls : [];
+        window.__mediafetchBlobUrls.push(objectUrl);
         return {
           ok: true,
-          initiated: true,
+          blobUrl: objectUrl,
           mode,
           size: Number(blob.size || 0),
+          contentType: String(blob.type || ""),
         };
       } catch (error) {
         return {
@@ -1146,15 +1136,43 @@ async function downloadWeiboVideoWithDirectStrategy(item, filename, _context = {
         };
       }
     },
-    args: [item.url, filename],
+    args: [item.url],
   });
 
   const response = results?.[0]?.result || null;
   if (!response?.ok) {
-    throw new Error(response?.error || "Weibo page-anchor download failed.");
+    throw new Error(response?.error || "Weibo page blob fetch failed.");
+  }
+  if (!response.blobUrl) {
+    throw new Error("Weibo page blob fetch did not return a blob URL.");
   }
 
-  return null;
+  try {
+    return await downloadToChrome({
+      url: response.blobUrl,
+      filename,
+      saveAs: false,
+      conflictAction: "uniquify",
+    });
+  } finally {
+    try {
+      await chrome.scripting.executeScript({
+        target: { tabId: tab.id },
+        world: "MAIN",
+        func: (blobUrl) => {
+          try {
+            URL.revokeObjectURL(String(blobUrl || ""));
+            if (Array.isArray(window.__mediafetchBlobUrls)) {
+              window.__mediafetchBlobUrls = window.__mediafetchBlobUrls.filter((item) => item !== blobUrl);
+            }
+          } catch (_error) {
+          }
+        },
+        args: [response.blobUrl],
+      });
+    } catch (_cleanupError) {
+    }
+  }
 }
 
 function getDownloadFilePrefix(metadata) {

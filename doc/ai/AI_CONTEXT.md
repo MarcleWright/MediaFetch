@@ -40,6 +40,7 @@
 - the next download-layer implementation focus is image-domain download migration, with Xiaohongshu image first and Sinaimg / Weibo image second
 - `behance` currently stays on the generic image path unless a real failure proves otherwise
 - current video download fix direction is `fetchBlob`-first with HTML-payload rejection and no silent direct fallback for `weibo`; a June 9 regression briefly pushed Weibo back to `direct`, and the immediate fix is to keep the built Weibo item on `fetchBlob`
+- current `weibo` video direction is no longer "trust current `video.src` only"; the rule should prefer the player quality menu, switch to the highest available quality, read the resulting real MP4 URL, then use page-context blob acquisition plus extension-side final save to preserve folder routing
 - current Xiaohongshu image direction is main-container first, structured `imageList` second, visual clustering last
 - current Xiaohongshu video direction is `mediaV2/stream` first, rank all variants, choose maximum size, then fall back to generic scanning
 - current Xiaohongshu video cover direction is the verified direct `https://ci.xiaohongshu.com/<fileId>` mapping from `note.video.image.thumbnailFileid`, then existing poster fallbacks

@@ -1,5 +1,21 @@
 # Dev Log
 
+### 2026-06-09 Weibo 4K Probe And Foldered Download Path Updated
+
+Status: In Progress
+
+Summary:
+
+- confirmed in live Chrome inspection that a Weibo video page can expose a full quality menu such as `4K`, `2K`, `1080p`, `720p`, and `480p` even when the static `<video src>` only reflects the currently playing quality
+- updated the Weibo video extractor to probe the quality menu, switch to the highest available quality, read the real direct MP4 URL, and then restore the prior quality when possible
+- recorded that pure page-context download can succeed but does not respect the extension folder pipeline, so the current Weibo download direction is now page-context blob acquisition plus extension-side `chrome.downloads` save into the target folder
+
+Links:
+
+- `doc/ai/tasks/2026-06-08_01_weibo-video-domain-rule.md`
+- `doc/engineering/KNOWN_ISSUES.md`
+- `doc/architecture/ARCHITECTURE_OVERVIEW.md`
+
 ### 2026-06-09 Weibo Regression Fixed And Xinpianchang Capture Failed
 
 Status: In Progress
