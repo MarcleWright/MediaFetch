@@ -14,6 +14,8 @@ The toolbar keeps the primary action buttons left-aligned and places the extract
 
 The settings and refresh actions use icon-only buttons, while `Select Original` remains grouped with the other left-side toolbar actions.
 
+Host-specific video extraction changes, including `weibo`'s direct MP4 rule, do not add extra popup controls. They only affect extraction and download behavior behind the existing toolbar.
+
 ## Selection Rules
 
 - image and video canonical states remain separate

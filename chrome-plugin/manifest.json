@@ -12,7 +12,8 @@
     "offscreen",
     "scripting",
     "storage",
-    "tabs"
+    "tabs",
+    "webRequest"
   ],
   "host_permissions": [
     "http://127.0.0.1:17321/*",

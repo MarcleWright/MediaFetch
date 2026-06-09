@@ -28,6 +28,11 @@ const clipboardDownloadBtn = document.getElementById("clipboardDownloadBtn");
 const clipboardBoxEl = document.getElementById("clipboardBox");
 const convertHeicToPngInput = document.getElementById("settingConvertHeicToPng");
 const settingLinkDownloadInput = document.getElementById("settingLinkDownload");
+const PLUGIN_VERSION = "0.2.1";
+
+function getResponseContentBuildHash(debug = {}) {
+  return String(debug?.client?.contentBuildHash || debug?.contentBuildHash || "unknown");
+}
 const settingLineageInput = document.getElementById("settingLineage");
 const settingEagleInput = document.getElementById("settingEagle");
 const folderNameInput = document.getElementById("folderName");
@@ -434,7 +439,7 @@ function normalizeMediaItem(item, index = 0) {
   const mediaType = item?.mediaType === "video" ? "video" : "image";
   const url = normalizeHttpUrl(item?.url || "");
   const sourceUrl = normalizeHttpUrl(item?.sourceUrl || item?.url || "");
-  const downloadStrategy = String(item?.download?.strategy || (mediaType === "video" ? "direct" : "fetchBlob"));
+  const downloadStrategy = String(item?.download?.strategy || (mediaType === "video" ? "fetchBlob" : "fetchBlob"));
   const width = Number(item?.width || 0);
   const height = Number(item?.height || 0);
   const resolution = item?.resolution || (mediaType === "video" && width > 0 && height > 0 ? `${width} x ${height}` : "Unknown");
@@ -457,7 +462,9 @@ function normalizeMediaItem(item, index = 0) {
     score: Number(item?.score || 0),
     area: Number(item?.area || 0),
     download: {
-      strategy: downloadStrategy === "fetchBlob" ? "fetchBlob" : "direct",
+      strategy: downloadStrategy || (mediaType === "video" ? "fetchBlob" : "direct"),
+      outputExtension: String(item?.download?.outputExtension || "").trim(),
+      allowDirectFallback: item?.download?.allowDirectFallback !== false,
     },
   };
 }
@@ -486,7 +493,7 @@ function normalizeExtractionMedia(response) {
     media.push(normalizeMediaItem({
       ...item,
       mediaType: "video",
-      download: item?.download || { strategy: "direct" },
+      download: item?.download || { strategy: "fetchBlob" },
     }, rawImages.length + index));
   });
   return media;
@@ -572,8 +579,8 @@ async function extractFromCurrentTab() {
       phase: "request-extraction",
       tabId: tab.id,
       tabUrl: tab.url || "",
-      version: "0.2.1",
-      contentBuildHash: "1155",
+      version: PLUGIN_VERSION,
+      contentBuildHash: "unknown",
       extractionRange,
     });
 
@@ -595,8 +602,8 @@ async function extractFromCurrentTab() {
       const responseClient = debug.client || {};
       debug.client = {
         ...responseClient,
-        version: "0.2.1",
-        contentBuildHash: "1155",
+        version: PLUGIN_VERSION,
+        contentBuildHash: getResponseContentBuildHash(debug),
         probeError: responseClient.probeError || "",
         instagramSamplingError: responseClient.instagramSamplingError || "",
         weiboSamplingError: responseClient.weiboSamplingError || "",
@@ -616,6 +623,7 @@ async function extractFromCurrentTab() {
         instagramSourceUrl: originalTabUrl,
         extractionRange,
       };
+      await attachXinpianchangNetworkProbe(debug, tab, originalTabUrl);
       renderDebugInfo(debug);
 
       const currentFolderInput = folderNameInput.value.trim();
@@ -656,8 +664,9 @@ async function extractFromCurrentTab() {
       state.metadata = extracted.metadata || null;
       const debug = extracted.debug || {};
       debug.client = {
-        version: "0.2.1",
-        contentBuildHash: "1155",
+        ...(debug.client || {}),
+        version: PLUGIN_VERSION,
+        contentBuildHash: getResponseContentBuildHash(debug),
         probeError: "",
         instagramSamplingError: "",
         weiboSamplingError: "",
@@ -683,6 +692,7 @@ async function extractFromCurrentTab() {
       if (debug.weibo && albumDebug) {
         debug.weibo.album = albumDebug;
       }
+      await attachXinpianchangNetworkProbe(debug, tab, originalTabUrl);
       renderDebugInfo(debug);
 
       const currentFolderInput = folderNameInput.value.trim();
@@ -800,8 +810,9 @@ async function extractFromCurrentTab() {
     state.metadata = extracted.metadata || null;
     const debug = extracted.debug || {};
     debug.client = {
-      version: "0.2.1",
-      contentBuildHash: "1155",
+      ...(debug.client || {}),
+      version: PLUGIN_VERSION,
+      contentBuildHash: getResponseContentBuildHash(debug),
       probeError,
       instagramSamplingError,
       weiboSamplingError,
@@ -822,6 +833,7 @@ async function extractFromCurrentTab() {
       weiboAlbumSourceUrl: originalTabUrl,
       extractionRange,
     };
+    await attachXinpianchangNetworkProbe(debug, tab, originalTabUrl);
     renderDebugInfo(debug);
 
     const currentFolderInput = folderNameInput.value.trim();
@@ -838,7 +850,8 @@ async function extractFromCurrentTab() {
     state.media = [];
     renderDebugInfo({
       phase: "error",
-      version: "0.2.1",
+      version: PLUGIN_VERSION,
+      contentBuildHash: "unknown",
       error: error instanceof Error ? error.message : String(error),
     });
     render();
@@ -865,6 +878,50 @@ async function requestExtraction(tab, maxIndexHint = 0, sampledUrls = [], sample
     } catch {
       throw new Error("Could not connect to the page. Reload the tab once and try again.");
     }
+  }
+}
+
+async function attachXinpianchangNetworkProbe(debug, tab, pageUrl) {
+  if (!tab?.id || !debug || !isXinpianchangUrl(pageUrl)) {
+    return;
+  }
+
+  try {
+    const response = await chrome.runtime.sendMessage({
+      type: "mediafetch:get-xinpianchang-network-probe",
+      tabId: tab.id,
+      pageUrl: String(pageUrl || ""),
+    });
+    if (!response?.ok) {
+      return;
+    }
+
+    debug.video = debug.video || {};
+    debug.video.xinpianchangNetworkProbe = response.probe || {
+      available: false,
+      reason: "probe-response-empty",
+      entries: [],
+    };
+  } catch (error) {
+    debug.video = debug.video || {};
+    debug.video.xinpianchangNetworkProbe = {
+      available: false,
+      reason: error instanceof Error ? error.message : String(error),
+      entries: [],
+    };
+  }
+}
+
+function isXinpianchangUrl(value) {
+  const normalized = normalizeHttpUrl(value || "");
+  if (!normalized) {
+    return false;
+  }
+
+  try {
+    return /(^|\.)xinpianchang\.com$/i.test(new URL(normalized).hostname || "");
+  } catch (_error) {
+    return false;
   }
 }
 
@@ -1562,9 +1619,20 @@ async function downloadClipboardWeiboOriginal() {
   }
 }
 
-function prepareDownloads(urls, fileNames, pageUrl) {
+function prepareDownloads(mediaItems, fileNames, pageUrl) {
   return new Promise((resolve) => {
-    chrome.runtime.sendMessage({ type: "mediafetch:prepare-downloads", urls, fileNames, pageUrl }, () => {
+    const normalizedMediaItems = Array.isArray(mediaItems)
+      ? mediaItems.map((item) => {
+        if (typeof item === "string") {
+          return { url: item, mediaType: "image" };
+        }
+        return {
+          url: item?.url || "",
+          mediaType: item?.mediaType === "video" ? "video" : "image",
+        };
+      })
+      : [];
+    chrome.runtime.sendMessage({ type: "mediafetch:prepare-downloads", mediaItems: normalizedMediaItems, fileNames, pageUrl }, () => {
       resolve();
     });
   });
@@ -2185,7 +2253,7 @@ async function probeLineageConnection() {
   setLineageStatus("Running Lineage probe...", false);
   const settings = await getLineageSettings();
   const probe = {
-    contentBuildHash: "1155",
+    contentBuildHash: PLUGIN_VERSION,
     featureEnabled: lineageFeatureEnabled,
     baseUrl: settings.baseUrl,
     tokenPresent: !!settings.token,

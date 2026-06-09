@@ -9,13 +9,35 @@ let activeDownloadTask = null;
 const downloadTaskQueue = [];
 const DOWNLOAD_ORIGINALS_MENU_ID = "mediafetch-download-originals";
 const WEIBO_DOWNLOAD_RULE_ID = 901001;
+const XINPIANCHANG_DOWNLOAD_RULE_ID = 901002;
+const XIAOHONGSHU_DOWNLOAD_RULE_ID = 901003;
+const SINAIMG_DOWNLOAD_RULE_ID = 901004;
 const METADATA_SENTINEL_FILE_NAME = "__mediafetch_metadata__.json";
 const DOWNLOAD_STRATEGY_DIRECT = "direct";
 const DOWNLOAD_STRATEGY_FETCH_BLOB = "fetchBlob";
+const DOWNLOAD_STRATEGY_XIAOHONGSHU_IMAGE_FETCH_BLOB = "xiaohongshuImageFetchBlob";
+const DOWNLOAD_STRATEGY_XIAOHONGSHU_VIDEO_FETCH_BLOB = "xiaohongshuVideoFetchBlob";
+const DOWNLOAD_STRATEGY_WEIBO_VIDEO_DIRECT = "weiboVideoDirect";
+const DOWNLOAD_STRATEGY_MEDIA_CAPTURE = "mediaCapture";
 const HEIC_CONVERTER_OFFSCREEN_URL = "offscreen.html";
-const DOWNLOAD_STRATEGY_RULES = [
+const OFFSCREEN_DOCUMENT_REASON = "BLOBS";
+const NETWORK_PROBE_ENTRY_LIMIT = 24;
+const IMAGE_DOWNLOAD_STRATEGY_RULES = [
   { strategy: DOWNLOAD_STRATEGY_FETCH_BLOB, test: isSinaimgUrl },
-  { strategy: DOWNLOAD_STRATEGY_FETCH_BLOB, test: isXiaohongshuCdnUrl },
+  { strategy: DOWNLOAD_STRATEGY_XIAOHONGSHU_IMAGE_FETCH_BLOB, test: isXiaohongshuCdnUrl },
+];
+const VIDEO_DOWNLOAD_STRATEGY_RULES = [
+  { strategy: DOWNLOAD_STRATEGY_WEIBO_VIDEO_DIRECT, test: isWeiboVideoUrl },
+  { strategy: DOWNLOAD_STRATEGY_XIAOHONGSHU_VIDEO_FETCH_BLOB, test: isXiaohongshuCdnUrl },
+  { strategy: DOWNLOAD_STRATEGY_MEDIA_CAPTURE, test: isXinpianchangVideoUrl },
+];
+const IMAGE_DOWNLOAD_HEADER_RULE_BUILDERS = [
+  { id: SINAIMG_DOWNLOAD_RULE_ID, test: isSinaimgUrl, build: buildSinaimgDownloadHeaderRule },
+  { id: XIAOHONGSHU_DOWNLOAD_RULE_ID, test: isXiaohongshuCdnUrl, build: buildXiaohongshuDownloadHeaderRule },
+];
+const VIDEO_DOWNLOAD_HEADER_RULE_BUILDERS = [
+  { id: WEIBO_DOWNLOAD_RULE_ID, test: isWeiboVideoUrl, build: buildWeiboVideoDownloadHeaderRule },
+  { id: XINPIANCHANG_DOWNLOAD_RULE_ID, test: isXinpianchangVideoUrl, build: buildXinpianchangVideoDownloadHeaderRule },
 ];
 const features = globalThis.MEDIAFETCH_FEATURES || {};
 const lineageFeatureEnabled = !!features.lineageIntegration;
@@ -24,6 +46,9 @@ const defaultLineageToken = String(features.defaultLineageToken || "").trim();
 const eagleFeatureEnabled = features.eagleIntegration !== false;
 const defaultEagleBaseUrl = normalizeEagleBaseUrl(features.defaultEagleBaseUrl || "http://localhost:41595");
 const WEIBO_ALBUM_EXTRACTION_MODE = "background";
+const xinpianchangNetworkProbeByTabId = new Map();
+
+installXinpianchangNetworkProbe();
 
 chrome.runtime.onInstalled.addListener(() => {
   setupContextMenus();
@@ -85,14 +110,30 @@ chrome.runtime.onMessage.addListener((message, _sender, sendResponse) => {
       ? message.fileNames.map((item) => sanitizeFileName(item)).filter(Boolean)
       : [];
     currentDownloadReferer = normalizeHttpUrl(message.pageUrl || "") || "https://weibo.com/";
+    const preparedMediaItems = Array.isArray(message.mediaItems)
+      ? message.mediaItems
+      : Array.isArray(message.urls)
+        ? message.urls.map((url) => ({ url, mediaType: "image" }))
+        : [];
 
-    setupDownloadHeaderRules(message.urls || [], currentDownloadReferer)
+    setupDownloadHeaderRules(preparedMediaItems, currentDownloadReferer)
       .then(() => sendResponse({ ok: true }))
       .catch((error) => sendResponse({
         ok: false,
         error: error instanceof Error ? error.message : String(error),
       }));
     return true;
+  }
+
+  if (message?.type === "mediafetch:get-xinpianchang-network-probe") {
+    sendResponse({
+      ok: true,
+      probe: getXinpianchangNetworkProbeSnapshot({
+        tabId: Number(message.tabId || 0) || null,
+        pageUrl: String(message.pageUrl || ""),
+      }),
+    });
+    return;
   }
 
   if (message?.type === "mediafetch:queue-metadata-path") {
@@ -197,6 +238,247 @@ chrome.runtime.onMessage.addListener((message, _sender, sendResponse) => {
     return true;
   }
 });
+
+function installXinpianchangNetworkProbe() {
+  if (!chrome.webRequest?.onBeforeRequest || !chrome.webRequest?.onHeadersReceived || !chrome.webRequest?.onErrorOccurred) {
+    return;
+  }
+
+  chrome.webRequest.onBeforeRequest.addListener(
+    (details) => {
+      const entry = getOrCreateProbeEntry(details);
+      if (!entry) return;
+      entry.method = details.method || entry.method || "";
+      entry.type = details.type || entry.type || "";
+      entry.timeStamp = Number(details.timeStamp || Date.now());
+    },
+    { urls: ["*://*.xpccdn.com/*", "*://*.xinpianchang.com/*"] }
+  );
+
+  chrome.webRequest.onHeadersReceived.addListener(
+    (details) => {
+      const entry = getOrCreateProbeEntry(details);
+      if (!entry) return;
+      entry.statusCode = Number(details.statusCode || 0);
+      entry.statusLine = String(details.statusLine || "");
+      entry.responseHeaders = pickProbeHeaders(details.responseHeaders);
+      entry.responseContentType = getHeaderValue(details.responseHeaders, "content-type");
+      entry.responseContentLength = getHeaderValue(details.responseHeaders, "content-length");
+      entry.responseContentRange = getHeaderValue(details.responseHeaders, "content-range");
+      entry.responseAcceptRanges = getHeaderValue(details.responseHeaders, "accept-ranges");
+      entry.responseLocation = getHeaderValue(details.responseHeaders, "location");
+      entry.stage = "headers-received";
+    },
+    { urls: ["*://*.xpccdn.com/*", "*://*.xinpianchang.com/*"] },
+    ["responseHeaders"]
+  );
+
+  chrome.webRequest.onCompleted.addListener(
+    (details) => {
+      const entry = getOrCreateProbeEntry(details);
+      if (!entry) return;
+      entry.statusCode = Number(details.statusCode || entry.statusCode || 0);
+      entry.fromCache = !!details.fromCache;
+      entry.ip = String(details.ip || "");
+      entry.stage = "completed";
+    },
+    { urls: ["*://*.xpccdn.com/*", "*://*.xinpianchang.com/*"] }
+  );
+
+  chrome.webRequest.onErrorOccurred.addListener(
+    (details) => {
+      const entry = getOrCreateProbeEntry(details);
+      if (!entry) return;
+      entry.error = String(details.error || "unknown");
+      entry.stage = "error";
+    },
+    { urls: ["*://*.xpccdn.com/*", "*://*.xinpianchang.com/*"] }
+  );
+}
+
+function getOrCreateProbeEntry(details) {
+  if (!shouldCaptureXinpianchangProbe(details)) {
+    return null;
+  }
+
+  const tabId = Number(details.tabId || 0);
+  if (!tabId) {
+    return null;
+  }
+
+  let probe = xinpianchangNetworkProbeByTabId.get(tabId);
+  if (!probe) {
+    probe = {
+      pageHost: "",
+      updatedAt: 0,
+      entries: [],
+    };
+    xinpianchangNetworkProbeByTabId.set(tabId, probe);
+  }
+
+  probe.updatedAt = Date.now();
+  if (details.initiator) {
+    probe.pageHost = safeHostname(details.initiator) || probe.pageHost;
+  } else if (details.documentUrl) {
+    probe.pageHost = safeHostname(details.documentUrl) || probe.pageHost;
+  }
+
+  let entry = probe.entries.find((item) => item.requestId === details.requestId);
+  if (!entry) {
+    entry = {
+      requestId: String(details.requestId || ""),
+      url: String(details.url || ""),
+      host: safeHostname(details.url),
+      method: String(details.method || ""),
+      type: String(details.type || ""),
+      initiator: String(details.initiator || ""),
+      documentUrl: String(details.documentUrl || ""),
+      documentHost: safeHostname(details.documentUrl || ""),
+      timeStamp: Number(details.timeStamp || Date.now()),
+      stage: "created",
+    };
+    probe.entries.unshift(entry);
+    if (probe.entries.length > NETWORK_PROBE_ENTRY_LIMIT) {
+      probe.entries.length = NETWORK_PROBE_ENTRY_LIMIT;
+    }
+  }
+
+  return entry;
+}
+
+function shouldCaptureXinpianchangProbe(details) {
+  const url = normalizeHttpUrl(details?.url || "");
+  if (!url) {
+    return false;
+  }
+
+  const host = safeHostname(url);
+  const initiatorHost = safeHostname(details?.initiator || "");
+  const documentHost = safeHostname(details?.documentUrl || "");
+  const relevantPage = /(^|\.)xinpianchang\.com$/i.test(initiatorHost) || /(^|\.)xinpianchang\.com$/i.test(documentHost);
+  const relevantAsset = /(^|\.)xpccdn\.com$/i.test(host) || /(^|\.)xinpianchang\.com$/i.test(host);
+
+  if (!relevantPage || !relevantAsset) {
+    return false;
+  }
+
+  const pathname = safePathname(url);
+  const type = String(details?.type || "").toLowerCase();
+
+  if (/\.(?:js|css|woff2?|ttf|map)(?:$|[?#])/i.test(pathname) || /\/_next\/static\//i.test(pathname)) {
+    return false;
+  }
+
+  const mediaType = ["media", "xmlhttprequest", "other"].includes(type);
+  const mediaPath = /\.(mp4|m4v|mov)(?:$|[?#])/i.test(url);
+  const mediaHost = /^us-xpc/i.test(host);
+  const mediaQuery = /[?&](?:j|sign|Expires)=/i.test(url);
+
+  return mediaPath || mediaHost || (mediaType && mediaQuery);
+}
+
+function getXinpianchangNetworkProbeSnapshot({ tabId = null, pageUrl = "" } = {}) {
+  const normalizedPageUrl = normalizeHttpUrl(pageUrl || "");
+  const numericTabId = Number(tabId || 0) || null;
+  let probe = numericTabId ? xinpianchangNetworkProbeByTabId.get(numericTabId) || null : null;
+
+  if (!probe && normalizedPageUrl) {
+    const pageHost = safeHostname(normalizedPageUrl);
+    if (/xinpianchang\.com$/i.test(pageHost)) {
+      for (const candidate of xinpianchangNetworkProbeByTabId.values()) {
+        if (candidate?.pageHost && candidate.pageHost === pageHost && candidate.entries?.length) {
+          probe = candidate;
+          break;
+        }
+      }
+    }
+  }
+
+  if (!probe) {
+    return {
+      available: false,
+      reason: "no-captured-requests",
+      entries: [],
+    };
+  }
+
+  return {
+    available: true,
+    updatedAt: probe.updatedAt || 0,
+    pageHost: probe.pageHost || "",
+    entries: Array.isArray(probe.entries)
+      ? probe.entries.map((entry) => ({
+        url: entry.url,
+        host: entry.host,
+        method: entry.method,
+        type: entry.type,
+        stage: entry.stage,
+        statusCode: Number(entry.statusCode || 0),
+        error: entry.error || "",
+        responseContentType: entry.responseContentType || "",
+        responseContentLength: entry.responseContentLength || "",
+        responseContentRange: entry.responseContentRange || "",
+        responseAcceptRanges: entry.responseAcceptRanges || "",
+        responseLocation: entry.responseLocation || "",
+        initiator: entry.initiator || "",
+        documentHost: entry.documentHost || "",
+        timeStamp: entry.timeStamp || 0,
+      }))
+      : [],
+  };
+}
+
+function pickProbeHeaders(headers) {
+  const names = ["content-type", "content-length", "content-range", "accept-ranges", "location"];
+  const result = {};
+  for (const name of names) {
+    const value = getHeaderValue(headers, name);
+    if (value) {
+      result[name] = value;
+    }
+  }
+  return result;
+}
+
+function getHeaderValue(headers, name) {
+  if (!Array.isArray(headers) || !name) {
+    return "";
+  }
+
+  const lowerName = String(name).toLowerCase();
+  for (const header of headers) {
+    if (String(header?.name || "").toLowerCase() === lowerName) {
+      return String(header?.value || "");
+    }
+  }
+  return "";
+}
+
+function safeHostname(input) {
+  const normalized = normalizeHttpUrl(input || "");
+  if (!normalized) {
+    return "";
+  }
+
+  try {
+    return new URL(normalized).hostname || "";
+  } catch (_error) {
+    return "";
+  }
+}
+
+function safePathname(input) {
+  const normalized = normalizeHttpUrl(input || "");
+  if (!normalized) {
+    return "";
+  }
+
+  try {
+    return new URL(normalized).pathname || "";
+  } catch (_error) {
+    return "";
+  }
+}
 
 chrome.downloads.onDeterminingFilename.addListener((downloadItem, suggest) => {
   if (downloadItem.byExtensionId !== chrome.runtime.id) {
@@ -608,7 +890,7 @@ async function downloadMediaBatch(mediaItems, options) {
   const filePrefix = getDownloadFilePrefix(options.metadata);
   currentDownloadFolder = folder;
   currentDownloadReferer = referer;
-  await setupDownloadHeaderRules(mediaItems.map((item) => item.url), referer);
+  await setupDownloadHeaderRules(mediaItems, referer);
   pendingDownloadFileNames = mediaItems.map((item, index) => {
     const extension = inferOutputExtension(item, options);
     return buildIndexedFileName(filePrefix, index, extension);
@@ -715,16 +997,12 @@ async function executeDownloadStrategy(item, filename, context = {}) {
   }
 
   const strategy = selectDownloadStrategy(item, context);
-  if (strategy === DOWNLOAD_STRATEGY_FETCH_BLOB) {
-    try {
-      return await downloadFetchedBlob(item.url, filename);
-    } catch (error) {
-      console.warn("MediaFetch fetch-blob download failed; falling back to direct download.", error);
-      return await downloadDirectMedia(item.url, filename);
-    }
+  const executor = getDownloadStrategyExecutor(strategy);
+  if (!executor) {
+    throw new Error(`Unsupported download strategy: ${strategy}`);
   }
 
-  return await downloadDirectMedia(item.url, filename);
+  return await executor(item, filename, context);
 }
 
 async function downloadConvertedPng(url, filename) {
@@ -746,6 +1024,157 @@ async function downloadDirectMedia(url, filename) {
   });
 }
 
+function getDownloadStrategyExecutor(strategy) {
+  const executors = {
+    [DOWNLOAD_STRATEGY_DIRECT]: downloadMediaWithDirectStrategy,
+    [DOWNLOAD_STRATEGY_FETCH_BLOB]: downloadMediaWithFetchBlobStrategy,
+    [DOWNLOAD_STRATEGY_XIAOHONGSHU_IMAGE_FETCH_BLOB]: downloadXiaohongshuImageWithFetchBlobStrategy,
+    [DOWNLOAD_STRATEGY_XIAOHONGSHU_VIDEO_FETCH_BLOB]: downloadXiaohongshuVideoWithFetchBlobStrategy,
+    [DOWNLOAD_STRATEGY_WEIBO_VIDEO_DIRECT]: downloadWeiboVideoWithDirectStrategy,
+    [DOWNLOAD_STRATEGY_MEDIA_CAPTURE]: downloadXinpianchangVideoViaMediaCapture,
+  };
+  return executors[strategy] || null;
+}
+
+async function downloadMediaWithDirectStrategy(item, filename, _context = {}) {
+  return await downloadDirectMedia(item.url, filename);
+}
+
+async function downloadMediaWithFetchBlobStrategy(item, filename, context = {}) {
+  try {
+    return await downloadFetchedBlob(item.url, filename);
+  } catch (error) {
+    if (!shouldAllowDirectFallback(item, context)) {
+      throw error;
+    }
+    console.warn("MediaFetch fetch-blob download failed; falling back to direct download.", error);
+    return await downloadDirectMedia(item.url, filename);
+  }
+}
+
+async function downloadXiaohongshuImageWithFetchBlobStrategy(item, filename, context = {}) {
+  return await downloadMediaWithFetchBlobStrategy(item, filename, context);
+}
+
+async function downloadXiaohongshuVideoWithFetchBlobStrategy(item, filename, context = {}) {
+  return await downloadMediaWithFetchBlobStrategy(item, filename, context);
+}
+
+async function downloadWeiboVideoWithDirectStrategy(item, filename, _context = {}) {
+  const pageUrl = normalizeHttpUrl(_context.pageUrl || _context.referer || "");
+  if (!pageUrl) {
+    throw new Error("Weibo direct video download requires a page URL.");
+  }
+
+  const tab = await findTabByUrl(pageUrl);
+  if (!tab?.id) {
+    throw new Error("Could not find the source tab for Weibo video download.");
+  }
+
+  const results = await chrome.scripting.executeScript({
+    target: { tabId: tab.id },
+    world: "MAIN",
+    func: async (url) => {
+      const fetchBlobViaXhr = (resourceUrl) => new Promise((resolve, reject) => {
+        try {
+          const xhr = new XMLHttpRequest();
+          xhr.open("GET", String(resourceUrl || ""), true);
+          xhr.responseType = "blob";
+          xhr.withCredentials = true;
+          xhr.onload = () => {
+            if (xhr.status >= 200 && xhr.status < 300 && xhr.response) {
+              resolve(xhr.response);
+              return;
+            }
+            reject(new Error(`XHR failed: ${xhr.status}`));
+          };
+          xhr.onerror = () => reject(new Error("XHR network error"));
+          xhr.send();
+        } catch (error) {
+          reject(error instanceof Error ? error : new Error(String(error)));
+        }
+      });
+
+      try {
+        let blob = null;
+        let mode = "";
+
+        try {
+          const response = await fetch(String(url || ""), {
+            method: "GET",
+            credentials: "include",
+            cache: "no-store",
+          });
+          if (!response.ok) {
+            throw new Error(`Fetch failed: ${response.status}`);
+          }
+          blob = await response.blob();
+          mode = "page-fetch-blob-download";
+        } catch (_fetchError) {
+          blob = await fetchBlobViaXhr(String(url || ""));
+          mode = "page-xhr-blob-download";
+        }
+
+        if (!blob || !blob.size) {
+          throw new Error("Weibo page blob download produced an empty file.");
+        }
+
+        const objectUrl = URL.createObjectURL(blob);
+        window.__mediafetchBlobUrls = Array.isArray(window.__mediafetchBlobUrls) ? window.__mediafetchBlobUrls : [];
+        window.__mediafetchBlobUrls.push(objectUrl);
+        return {
+          ok: true,
+          blobUrl: objectUrl,
+          mode,
+          size: Number(blob.size || 0),
+          contentType: String(blob.type || ""),
+        };
+      } catch (error) {
+        return {
+          ok: false,
+          error: error instanceof Error ? error.message : String(error),
+        };
+      }
+    },
+    args: [item.url],
+  });
+
+  const response = results?.[0]?.result || null;
+  if (!response?.ok) {
+    throw new Error(response?.error || "Weibo page blob fetch failed.");
+  }
+  if (!response.blobUrl) {
+    throw new Error("Weibo page blob fetch did not return a blob URL.");
+  }
+
+  try {
+    return await downloadToChrome({
+      url: response.blobUrl,
+      filename,
+      saveAs: false,
+      conflictAction: "uniquify",
+    });
+  } finally {
+    try {
+      await chrome.scripting.executeScript({
+        target: { tabId: tab.id },
+        world: "MAIN",
+        func: (blobUrl) => {
+          try {
+            URL.revokeObjectURL(String(blobUrl || ""));
+            if (Array.isArray(window.__mediafetchBlobUrls)) {
+              window.__mediafetchBlobUrls = window.__mediafetchBlobUrls.filter((item) => item !== blobUrl);
+            }
+          } catch (_error) {
+          }
+        },
+        args: [response.blobUrl],
+      });
+    } catch (_cleanupError) {
+    }
+  }
+}
+
 function getDownloadFilePrefix(metadata) {
   const projectId = sanitizePathPart(metadata?.projectId || "");
   return projectId || "";
@@ -758,6 +1187,10 @@ function buildIndexedFileName(prefix, index, extension) {
 }
 
 function inferOutputExtension(item, options = {}) {
+  const hintedExtension = sanitizeFileName(item?.download?.outputExtension || "").replace(/^\.+/, "");
+  if (hintedExtension) {
+    return hintedExtension;
+  }
   return shouldConvertHeicToPng(item, options)
     ? "png"
     : item?.mediaType === "video"
@@ -807,16 +1240,48 @@ function inferVideoExtension(url, format) {
   return "mp4";
 }
 
-// Network quirks are centralized here so download batching stays platform-neutral.
-function selectDownloadStrategy(item, _context = {}) {
+function selectDownloadStrategy(item, context = {}) {
+  return item?.mediaType === "video"
+    ? selectVideoDownloadStrategy(item, context)
+    : selectImageDownloadStrategy(item, context);
+}
+
+function selectImageDownloadStrategy(item, context = {}) {
   const hinted = String(item?.download?.strategy || "").trim();
-  if (hinted === DOWNLOAD_STRATEGY_FETCH_BLOB || hinted === DOWNLOAD_STRATEGY_DIRECT) {
+  if (
+    hinted === DOWNLOAD_STRATEGY_FETCH_BLOB ||
+    hinted === DOWNLOAD_STRATEGY_DIRECT ||
+    hinted === DOWNLOAD_STRATEGY_XIAOHONGSHU_IMAGE_FETCH_BLOB
+  ) {
     return hinted;
   }
 
-  const url = item?.url || "";
-  const rule = DOWNLOAD_STRATEGY_RULES.find((entry) => entry.test(url, item, _context));
-  return rule?.strategy || DOWNLOAD_STRATEGY_DIRECT;
+  const rule = getImageDownloadStrategyRule(item, context);
+  if (rule) {
+    return rule.strategy;
+  }
+
+  return DOWNLOAD_STRATEGY_DIRECT;
+}
+
+function selectVideoDownloadStrategy(item, context = {}) {
+  const hinted = String(item?.download?.strategy || "").trim();
+  if (
+    hinted === DOWNLOAD_STRATEGY_FETCH_BLOB ||
+    hinted === DOWNLOAD_STRATEGY_DIRECT ||
+    hinted === DOWNLOAD_STRATEGY_XIAOHONGSHU_VIDEO_FETCH_BLOB ||
+    hinted === DOWNLOAD_STRATEGY_WEIBO_VIDEO_DIRECT ||
+    hinted === DOWNLOAD_STRATEGY_MEDIA_CAPTURE
+  ) {
+    return hinted;
+  }
+
+  const rule = getVideoDownloadStrategyRule(item, context);
+  if (rule) {
+    return rule.strategy;
+  }
+
+  return DOWNLOAD_STRATEGY_FETCH_BLOB;
 }
 
 async function downloadFetchedBlob(url, filename) {
@@ -839,6 +1304,9 @@ async function downloadFetchedBlob(url, filename) {
   if (!bytes.length) {
     throw new Error("Media response was empty.");
   }
+  if (isFetchedHtmlPayload(bytes, contentType)) {
+    throw new Error("Media request returned HTML instead of a file.");
+  }
 
   const mimeType = contentType.startsWith("image/") || contentType.startsWith("video/")
     ? contentType
@@ -860,6 +1328,259 @@ function isFetchedMediaContentTypeAllowed(contentType) {
     contentType === "application/octet-stream" ||
     contentType === "binary/octet-stream"
   );
+}
+
+function isFetchedHtmlPayload(bytes, contentType) {
+  if (contentType.includes("text/html")) {
+    return true;
+  }
+  if (!bytes?.length) {
+    return false;
+  }
+  const sample = new TextDecoder("utf-8", { fatal: false }).decode(bytes.slice(0, 512)).trim().toLowerCase();
+  return sample.startsWith("<!doctype html") || sample.startsWith("<html") || sample.includes("<body");
+}
+
+function shouldAllowDirectFallback(item, _context = {}) {
+  if (item?.download?.allowDirectFallback === false) {
+    return false;
+  }
+  const url = String(item?.url || "");
+  if (isWeiboVideoUrl(url) || isXinpianchangVideoUrl(url)) {
+    return false;
+  }
+  return true;
+}
+
+async function downloadXinpianchangVideoViaMediaCapture(item, filename, context = {}) {
+  const pageUrl = normalizeHttpUrl(context.pageUrl || context.referer || "");
+  if (!pageUrl) {
+    throw new Error("Xinpianchang media-capture download requires a page URL.");
+  }
+
+  const tab = await findTabByUrl(pageUrl);
+  if (!tab?.id) {
+    throw new Error("Could not find the source tab for Xinpianchang media-capture download.");
+  }
+
+  const safeDuration = Math.max(0, Number(item?.duration || 0));
+  const results = await chrome.scripting.executeScript({
+    target: { tabId: tab.id },
+    world: "MAIN",
+    func: async (url, downloadName, durationSeconds) => {
+      const waitForEvent = (target, successEvents, errorEvents, timeoutMs, errorMessage) => {
+        const successList = Array.isArray(successEvents) ? successEvents : [successEvents];
+        const errorList = Array.isArray(errorEvents) ? errorEvents : [errorEvents];
+        return new Promise((resolve, reject) => {
+          let timeoutId = 0;
+          const cleanup = () => {
+            successList.forEach((name) => target.removeEventListener(name, onSuccess));
+            errorList.forEach((name) => target.removeEventListener(name, onError));
+            if (timeoutId) {
+              window.clearTimeout(timeoutId);
+            }
+          };
+          const onSuccess = () => {
+            cleanup();
+            resolve();
+          };
+          const onError = () => {
+            cleanup();
+            reject(new Error(errorMessage));
+          };
+          successList.forEach((name) => target.addEventListener(name, onSuccess, { once: true }));
+          errorList.forEach((name) => target.addEventListener(name, onError, { once: true }));
+          if (timeoutMs > 0) {
+            timeoutId = window.setTimeout(() => {
+              cleanup();
+              reject(new Error(errorMessage));
+            }, timeoutMs);
+          }
+        });
+      };
+
+      const pickRecorderMimeType = () => {
+        const candidates = [
+          "video/webm;codecs=vp9,opus",
+          "video/webm;codecs=vp8,opus",
+          "video/webm;codecs=h264,opus",
+          "video/webm",
+        ];
+        if (typeof MediaRecorder === "undefined" || typeof MediaRecorder.isTypeSupported !== "function") {
+          return "";
+        }
+        return candidates.find((value) => MediaRecorder.isTypeSupported(value)) || "";
+      };
+
+      try {
+        if (typeof MediaRecorder === "undefined") {
+          throw new Error("MediaRecorder is not available in the page context.");
+        }
+
+        const video = document.createElement("video");
+        video.src = String(url || "");
+        video.preload = "auto";
+        video.playsInline = true;
+        video.muted = true;
+        video.controls = false;
+        video.loop = false;
+        video.style.position = "fixed";
+        video.style.left = "-99999px";
+        video.style.top = "0";
+        video.style.width = "1px";
+        video.style.height = "1px";
+        video.style.opacity = "0";
+        (document.documentElement || document.body || document.head).appendChild(video);
+
+        try {
+          if (video.readyState < 1) {
+            await waitForEvent(video, ["loadedmetadata", "loadeddata", "canplay"], ["error", "abort"], 30000, "Xinpianchang video could not load metadata.");
+          }
+
+          const captureSource = typeof video.captureStream === "function"
+            ? video.captureStream()
+            : (typeof video.mozCaptureStream === "function" ? video.mozCaptureStream() : null);
+          if (!captureSource) {
+            throw new Error("The page does not support captureStream for video recording.");
+          }
+
+          let mixedStream = captureSource;
+          let audioContext = null;
+          try {
+            const AudioContextCtor = window.AudioContext || window.webkitAudioContext;
+            if (AudioContextCtor) {
+              audioContext = new AudioContextCtor();
+              if (audioContext.state === "suspended") {
+                await audioContext.resume().catch(() => {});
+              }
+              const sourceNode = audioContext.createMediaElementSource(video);
+              const audioDestination = audioContext.createMediaStreamDestination();
+              const muteGain = audioContext.createGain();
+              muteGain.gain.value = 0;
+              sourceNode.connect(audioDestination);
+              sourceNode.connect(muteGain);
+              muteGain.connect(audioContext.destination);
+              const tracks = [
+                ...captureSource.getVideoTracks(),
+                ...audioDestination.stream.getAudioTracks(),
+              ];
+              if (tracks.length) {
+                mixedStream = new MediaStream(tracks);
+              }
+            }
+          } catch (_audioError) {
+          }
+
+          const recorderMimeType = pickRecorderMimeType();
+          const recorder = recorderMimeType
+            ? new MediaRecorder(mixedStream, { mimeType: recorderMimeType })
+            : new MediaRecorder(mixedStream);
+          const chunks = [];
+          recorder.ondataavailable = (event) => {
+            if (event?.data && event.data.size > 0) {
+              chunks.push(event.data);
+            }
+          };
+
+          const stopPromise = new Promise((resolve, reject) => {
+            let safetyTimeoutId = 0;
+            recorder.onerror = (event) => {
+              if (safetyTimeoutId) {
+                window.clearTimeout(safetyTimeoutId);
+              }
+              reject(new Error(event?.error?.message || "MediaRecorder failed while capturing Xinpianchang video."));
+            };
+            recorder.onstop = () => {
+              if (safetyTimeoutId) {
+                window.clearTimeout(safetyTimeoutId);
+              }
+              resolve();
+            };
+            const timeoutMs = Math.max(120000, Math.ceil(Number(durationSeconds || 0) * 1500) + 30000);
+            safetyTimeoutId = window.setTimeout(() => {
+              try {
+                if (recorder.state !== "inactive") {
+                  recorder.stop();
+                }
+              } catch (_stopError) {
+              }
+            }, timeoutMs);
+          });
+
+          recorder.start(1000);
+          try {
+            video.currentTime = 0;
+          } catch (_seekError) {
+          }
+          await video.play();
+          const playbackTimeoutMs = Math.max(120000, Math.ceil(Number(durationSeconds || 0) * 1500) + 30000);
+          await waitForEvent(video, "ended", ["error", "abort"], playbackTimeoutMs, "Xinpianchang media playback timed out before capture finished.");
+          if (recorder.state !== "inactive") {
+            recorder.stop();
+          }
+          await stopPromise;
+
+          const recordedType = recorder.mimeType || recorderMimeType || "video/webm";
+          const blob = new Blob(chunks, { type: recordedType });
+          if (!blob.size) {
+            throw new Error("Recorded media blob was empty.");
+          }
+
+          const objectUrl = URL.createObjectURL(blob);
+          const anchor = document.createElement("a");
+          anchor.href = objectUrl;
+          anchor.download = String(downloadName || "download.webm");
+          anchor.rel = "noopener";
+          anchor.style.display = "none";
+          document.documentElement.appendChild(anchor);
+          anchor.click();
+          anchor.remove();
+          window.setTimeout(() => URL.revokeObjectURL(objectUrl), 60000);
+
+          try {
+            mixedStream.getTracks().forEach((track) => track.stop());
+          } catch (_trackError) {
+          }
+          try {
+            captureSource.getTracks().forEach((track) => track.stop());
+          } catch (_sourceTrackError) {
+          }
+          if (audioContext) {
+            try {
+              await audioContext.close();
+            } catch (_closeError) {
+            }
+          }
+
+          return {
+            ok: true,
+            initiated: true,
+            mode: "mediaCapture",
+            mimeType: recordedType,
+            size: blob.size,
+          };
+        } finally {
+          video.pause();
+          video.removeAttribute("src");
+          video.load();
+          video.remove();
+        }
+      } catch (error) {
+        return {
+          ok: false,
+          error: error instanceof Error ? error.message : String(error),
+        };
+      }
+    },
+    args: [item.url, filename, safeDuration],
+  });
+
+  const response = results?.[0]?.result || null;
+  if (!response?.ok) {
+    throw new Error(response?.error || "Xinpianchang media-capture download failed.");
+  }
+
+  return null;
 }
 
 function inferMimeTypeFromFilename(filename) {
@@ -926,48 +1647,142 @@ async function processDownloadQueue() {
   }
 }
 
-async function setupDownloadHeaderRules(urls, referer = "https://weibo.com/") {
-  if (!Array.isArray(urls) || !urls.some((url) => isSinaimgUrl(url))) {
-    return;
-  }
+async function setupDownloadHeaderRules(mediaItems, referer = "https://weibo.com/") {
+  const normalizedItems = Array.isArray(mediaItems)
+    ? mediaItems.map((item) => (typeof item === "string" ? { url: item, mediaType: "image" } : item))
+    : [];
+  const addRules = resolveDownloadHeaderRules(normalizedItems, { referer });
 
-  if (!chrome.declarativeNetRequest?.updateDynamicRules) {
+  if (!addRules.length || !chrome.declarativeNetRequest?.updateDynamicRules) {
     return;
   }
 
   await chrome.declarativeNetRequest.updateDynamicRules({
-    removeRuleIds: [WEIBO_DOWNLOAD_RULE_ID],
-    addRules: [{
-      id: WEIBO_DOWNLOAD_RULE_ID,
-      priority: 1,
-      action: {
-        type: "modifyHeaders",
-        requestHeaders: [
-          {
-            header: "Referer",
-            operation: "set",
-            value: referer,
-          },
-          {
-            header: "Origin",
-            operation: "set",
-            value: "https://weibo.com",
-          },
-        ],
-      },
-      condition: {
-        urlFilter: "||sinaimg.cn/",
-        resourceTypes: [
-          "main_frame",
-          "sub_frame",
-          "image",
-          "media",
-          "xmlhttprequest",
-          "other",
-        ],
-      },
-    }],
+    removeRuleIds: [WEIBO_DOWNLOAD_RULE_ID, XINPIANCHANG_DOWNLOAD_RULE_ID, XIAOHONGSHU_DOWNLOAD_RULE_ID, SINAIMG_DOWNLOAD_RULE_ID],
+    addRules,
   });
+}
+
+function resolveDownloadHeaderRules(mediaItems, context = {}) {
+  const items = Array.isArray(mediaItems) ? mediaItems : [];
+  const resolvedRules = new Map();
+  items.forEach((item) => {
+    const rule = item?.mediaType === "video"
+      ? getVideoDownloadHeaderRule(item, context)
+      : getImageDownloadHeaderRule(item, context);
+    if (rule && !resolvedRules.has(rule.id)) {
+      resolvedRules.set(rule.id, rule.build(context));
+    }
+  });
+  return Array.from(resolvedRules.values());
+}
+
+function getImageDownloadStrategyRule(item, context = {}) {
+  const url = item?.url || "";
+  return IMAGE_DOWNLOAD_STRATEGY_RULES.find((entry) => entry.test(url, item, context)) || null;
+}
+
+function getVideoDownloadStrategyRule(item, context = {}) {
+  const url = item?.url || "";
+  return VIDEO_DOWNLOAD_STRATEGY_RULES.find((entry) => entry.test(url, item, context)) || null;
+}
+
+function getImageDownloadHeaderRule(item, context = {}) {
+  const url = item?.url || "";
+  return IMAGE_DOWNLOAD_HEADER_RULE_BUILDERS.find((entry) => entry.test(url, item, context)) || null;
+}
+
+function getVideoDownloadHeaderRule(item, context = {}) {
+  const url = item?.url || "";
+  return VIDEO_DOWNLOAD_HEADER_RULE_BUILDERS.find((entry) => entry.test(url, item, context)) || null;
+}
+
+function buildImageDownloadRuleContext(referer) {
+  const safeReferer = normalizeHttpUrl(referer || "") || "https://weibo.com/";
+  const safeOrigin = getOriginFromUrl(safeReferer) || "https://weibo.com";
+  return { safeReferer, safeOrigin };
+}
+
+function buildVideoDownloadRuleContext(referer) {
+  const safeReferer = normalizeHttpUrl(referer || "") || "https://weibo.com/";
+  const safeOrigin = getOriginFromUrl(safeReferer) || "https://weibo.com";
+  return { safeReferer, safeOrigin };
+}
+
+function buildSinaimgDownloadHeaderRule(context = {}) {
+  const { safeReferer } = buildImageDownloadRuleContext(context.referer);
+  return {
+    id: SINAIMG_DOWNLOAD_RULE_ID,
+    priority: 1,
+    action: {
+      type: "modifyHeaders",
+      requestHeaders: [
+        { header: "Referer", operation: "set", value: safeReferer },
+        { header: "Origin", operation: "set", value: "https://weibo.com" },
+      ],
+    },
+    condition: {
+      regexFilter: "^https?:\\/\\/(?:[^/]+\\.)?sinaimg\\.cn/",
+      resourceTypes: ["main_frame", "sub_frame", "image", "media", "xmlhttprequest", "other"],
+    },
+  };
+}
+
+function buildXiaohongshuDownloadHeaderRule(context = {}) {
+  const { safeReferer, safeOrigin } = buildImageDownloadRuleContext(context.referer);
+  return {
+    id: XIAOHONGSHU_DOWNLOAD_RULE_ID,
+    priority: 1,
+    action: {
+      type: "modifyHeaders",
+      requestHeaders: [
+        { header: "Referer", operation: "set", value: safeReferer },
+        { header: "Origin", operation: "set", value: safeOrigin },
+      ],
+    },
+    condition: {
+      regexFilter: "^https?:\\/\\/(?:[^/]+\\.)?xhscdn\\.com/",
+      resourceTypes: ["main_frame", "sub_frame", "image", "media", "xmlhttprequest", "other"],
+    },
+  };
+}
+
+function buildWeiboVideoDownloadHeaderRule(context = {}) {
+  const { safeReferer } = buildVideoDownloadRuleContext(context.referer);
+  return {
+    id: WEIBO_DOWNLOAD_RULE_ID,
+    priority: 1,
+    action: {
+      type: "modifyHeaders",
+      requestHeaders: [
+        { header: "Referer", operation: "set", value: safeReferer },
+        { header: "Origin", operation: "set", value: "https://weibo.com" },
+      ],
+    },
+    condition: {
+      regexFilter: "^https?:\\/\\/(?:[^/]+\\.)*(?:weibocdn\\.com|video\\.weibo\\.com)/",
+      resourceTypes: ["main_frame", "sub_frame", "media", "xmlhttprequest", "other"],
+    },
+  };
+}
+
+function buildXinpianchangVideoDownloadHeaderRule(context = {}) {
+  const { safeReferer, safeOrigin } = buildVideoDownloadRuleContext(context.referer);
+  return {
+    id: XINPIANCHANG_DOWNLOAD_RULE_ID,
+    priority: 1,
+    action: {
+      type: "modifyHeaders",
+      requestHeaders: [
+        { header: "Referer", operation: "set", value: safeReferer },
+        { header: "Origin", operation: "set", value: safeOrigin },
+      ],
+    },
+    condition: {
+      regexFilter: "^https?:\\/\\/(?:[^/]+\\.)?xpccdn\\.com/",
+      resourceTypes: ["main_frame", "sub_frame", "media", "xmlhttprequest", "other"],
+    },
+  };
 }
 
 async function requestExtraction(tab, maxIndexHint = 0, sampledUrls = [], sampledIndexes = [], extractionRange = "images") {
@@ -1472,6 +2287,22 @@ function sendTabMessage(tabId, message) {
   });
 }
 
+async function findTabByUrl(targetUrl) {
+  const normalizedTarget = normalizeHttpUrl(targetUrl || "");
+  if (!normalizedTarget) {
+    return null;
+  }
+
+  const tabs = await chrome.tabs.query({});
+  const exact = tabs.find((tab) => normalizeHttpUrl(tab?.url || "") === normalizedTarget);
+  if (exact) {
+    return exact;
+  }
+
+  const withoutHash = normalizedTarget.split("#")[0];
+  return tabs.find((tab) => normalizeHttpUrl(tab?.url || "").split("#")[0] === withoutHash) || null;
+}
+
 function downloadToChrome(options) {
   return new Promise((resolve, reject) => {
     chrome.downloads.download(options, (downloadId) => {
@@ -1846,10 +2677,10 @@ async function fetchImageAsPngDataUrl(url) {
   return await convertHeicArrayBufferToPngDataUrl(buffer, contentType);
 }
 
-let creatingHeicConverterDocument = null;
+let creatingOffscreenDocument = null;
 
 async function convertHeicArrayBufferToPngDataUrl(buffer, contentType) {
-  await ensureHeicConverterDocument();
+  await ensureMediaFetchOffscreenDocument();
 
   return await new Promise((resolve, reject) => {
     chrome.runtime.sendMessage({
@@ -1872,25 +2703,29 @@ async function convertHeicArrayBufferToPngDataUrl(buffer, contentType) {
 }
 
 async function ensureHeicConverterDocument() {
+  return await ensureMediaFetchOffscreenDocument();
+}
+
+async function ensureMediaFetchOffscreenDocument() {
   if (!chrome.offscreen?.createDocument) {
-    throw new Error("HEIC conversion requires the chrome.offscreen extension API.");
+    throw new Error("MediaFetch offscreen operations require the chrome.offscreen extension API.");
   }
 
   if (chrome.offscreen.hasDocument && await chrome.offscreen.hasDocument()) {
     return;
   }
 
-  if (!creatingHeicConverterDocument) {
-    creatingHeicConverterDocument = chrome.offscreen.createDocument({
+  if (!creatingOffscreenDocument) {
+    creatingOffscreenDocument = chrome.offscreen.createDocument({
       url: HEIC_CONVERTER_OFFSCREEN_URL,
-      reasons: ["BLOBS"],
-      justification: "Convert downloaded HEIC/HEIF image data to PNG inside MediaFetch.",
+      reasons: [OFFSCREEN_DOCUMENT_REASON],
+      justification: "Convert HEIC images and download host-protected media inside MediaFetch.",
     }).finally(() => {
-      creatingHeicConverterDocument = null;
+      creatingOffscreenDocument = null;
     });
   }
 
-  await creatingHeicConverterDocument;
+  await creatingOffscreenDocument;
 }
 
 function normalizeEagleOptions(value) {
@@ -1999,12 +2834,39 @@ function isSinaimgUrl(url) {
   }
 }
 
+function isWeiboVideoUrl(url) {
+  try {
+    const parsed = new URL(url);
+    return /(^|\.)weibocdn\.com$/i.test(parsed.hostname) || /(^|\.)video\.weibo\.com$/i.test(parsed.hostname);
+  } catch {
+    return false;
+  }
+}
+
+function isXinpianchangVideoUrl(url) {
+  try {
+    const parsed = new URL(url);
+    return /(^|\.)xpccdn\.com$/i.test(parsed.hostname);
+  } catch {
+    return false;
+  }
+}
+
 function isXiaohongshuCdnUrl(url) {
   try {
     const parsed = new URL(url);
     return /(^|\.)xhscdn\.com$/i.test(parsed.hostname) || /(^|\.)snsimg\.cn$/i.test(parsed.hostname);
   } catch {
     return false;
+  }
+}
+
+function getOriginFromUrl(value) {
+  try {
+    const parsed = new URL(String(value || ""));
+    return `${parsed.protocol}//${parsed.host}`;
+  } catch {
+    return "";
   }
 }
 

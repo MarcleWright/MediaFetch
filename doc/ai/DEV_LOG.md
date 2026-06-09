@@ -1,5 +1,290 @@
 # Dev Log
 
+### 2026-06-09 Weibo 4K Probe And Foldered Download Path Updated
+
+Status: In Progress
+
+Summary:
+
+- confirmed in live Chrome inspection that a Weibo video page can expose a full quality menu such as `4K`, `2K`, `1080p`, `720p`, and `480p` even when the static `<video src>` only reflects the currently playing quality
+- updated the Weibo video extractor to probe the quality menu, switch to the highest available quality, read the real direct MP4 URL, and then restore the prior quality when possible
+- recorded that pure page-context download can succeed but does not respect the extension folder pipeline, so the current Weibo download direction is now page-context blob acquisition plus extension-side `chrome.downloads` save into the target folder
+
+Links:
+
+- `doc/ai/tasks/2026-06-08_01_weibo-video-domain-rule.md`
+- `doc/engineering/KNOWN_ISSUES.md`
+- `doc/architecture/ARCHITECTURE_OVERVIEW.md`
+
+### 2026-06-09 Weibo Regression Fixed And Xinpianchang Capture Failed
+
+Status: In Progress
+
+Summary:
+
+- validated that the current `xinpianchang` `mediaCapture` pass still fails because `HTMLMediaElement.captureStream()` is blocked for cross-origin media data
+- confirmed that this makes the browser-only media-capture executor an unaccepted final solution for the domain
+- found and fixed a separate `weibo` regression where the built Weibo video item had drifted back to `download.strategy: "direct"`, which can degrade into `001.htm`
+
+Links:
+
+- `doc/ai/tasks/2026-06-09_01_xinpianchang-media-request-download-executor.md`
+- `doc/ai/tasks/2026-06-08_01_weibo-video-domain-rule.md`
+- `doc/engineering/KNOWN_ISSUES.md`
+
+### 2026-06-09 Xinpianchang Media-Capture Executor Implemented
+
+Status: In Progress
+
+Summary:
+
+- removed the failed `xinpianchang` bridge-style page download path so the domain no longer mixes multiple dead-end executor experiments
+- implemented a dedicated `mediaCapture` video download strategy for `xinpianchang` based on browser-native playback capture plus `MediaRecorder`
+- kept the task open because the new executor still needs real-page end-to-end validation before the result can be accepted
+
+Links:
+
+- `doc/ai/tasks/2026-06-09_01_xinpianchang-media-request-download-executor.md`
+- `chrome-plugin/background.js`
+- `chrome-plugin/content.js`
+- `chrome-plugin/popup.js`
+
+### 2026-06-09 Xinpianchang Playback Probe Confirmed Media Request Path
+
+Status: Done
+
+Summary:
+
+- added a temporary `xinpianchang` network probe to compare extracted video URLs against real browser playback requests
+- confirmed that the tested `xinpianchang` page plays the same extracted MP4 URL through `type: media` requests with `206 Partial Content`
+- recorded that the next fix direction must move from `direct` or `fetch` variants to a media-request-based special download executor
+
+Links:
+
+- `doc/ai/tasks/2026-06-09_01_xinpianchang-media-request-download-executor.md`
+- `doc/engineering/KNOWN_ISSUES.md`
+- `doc/architecture/ARCHITECTURE_OVERVIEW.md`
+
+### 2026-06-09 Xinpianchang Failure Chain Documented
+
+Status: Done
+
+Summary:
+
+- recorded that `xinpianchang` extraction is currently correct but download execution is still the true blocker
+- documented the now-confirmed failure chain: `001.htm` false-success, `403` on protected host fetch, CSP blocking inline page injection, `Failed to fetch` in main-world page fetch, and `403 Forbidden` on direct navigation to the extracted media URL
+- captured the conclusion that future work should start from a stronger bypass design instead of repeating small shared `direct` or `fetchBlob` tweaks
+
+Links:
+
+- `doc/ai/tasks/2026-06-08_02_xinpianchang-video-domain-rule.md`
+- `doc/engineering/KNOWN_ISSUES.md`
+- `doc/architecture/ARCHITECTURE_OVERVIEW.md`
+
+### 2026-06-09 Weibo And Xinpianchang Video Download Fix Pass Started
+
+Status: In Progress
+
+Summary:
+
+- changed `weibo` and `xinpianchang` video downloads to prefer `fetchBlob` instead of direct browser download
+- disabled silent direct fallback for those two video domains so failed protected requests no longer degrade into saved webpage content
+- added HTML-payload rejection before saving fetched media so `001.htm`-style false-success results are blocked at the download executor layer
+- left final task completion pending real browser-page validation
+
+Links:
+
+- `doc/ai/tasks/2026-06-08_01_weibo-video-domain-rule.md`
+- `doc/ai/tasks/2026-06-08_02_xinpianchang-video-domain-rule.md`
+- `doc/engineering/KNOWN_ISSUES.md`
+
+### 2026-06-08 Branch Snapshot Prepared Before Video Download Fix Pass
+
+Status: Done
+
+Summary:
+
+- prepared the current branch as a stable architecture-and-doc snapshot instead of continuing to force more video download changes
+- confirmed that Xiaohongshu image download is restored by user testing after the download-layer cleanup
+- explicitly deferred `weibo` and `xinpianchang` end-to-end video download fixes to the next iteration
+- cleaned remaining debug/doc tail issues so this branch can be committed without claiming video download is solved
+
+Links:
+
+- `doc/engineering/KNOWN_ISSUES.md`
+- `doc/ai/tasks/2026-06-08_01_weibo-video-domain-rule.md`
+- `doc/ai/tasks/2026-06-08_02_xinpianchang-video-domain-rule.md`
+- `doc/architecture/ARCHITECTURE_OVERVIEW.md`
+
+### 2026-06-08 Image Download Rule Migration Task Created
+
+Status: Reopened
+
+Summary:
+
+- reviewed the explicit image download rule path and confirmed it already exists in `chrome-plugin/background.js`
+- classified `xiaohongshu` and `sinaimg` / Weibo-image as image-rule cases, while `behance` remains on the generic path in this pass
+- left the real browser-page download replay as a follow-up because it was not run in this workspace
+
+Links:
+
+- `doc/ai/tasks/2026-06-08_05_image-download-domain-rule-migration.md`
+- `doc/architecture/DOWNLOAD_LAYER_REFACTOR_PLAN.md`
+
+### 2026-06-08 Download Layer Refactor Task Created
+
+Status: Done
+
+Summary:
+
+- completed the download-layer boundary refactor so image and video now have explicit download rule entry points
+- kept shared download execution generic while moving host-specific branching behind media-type rule resolvers
+- validated the refactor with `node --check` on the plugin scripts plus `git diff --check`
+
+Links:
+
+- `doc/ai/tasks/2026-06-08_04_download-layer-refactor-implementation.md`
+- `chrome-plugin/background.js`
+- `doc/architecture/DOWNLOAD_LAYER_REFACTOR_PLAN.md`
+
+### 2026-06-08 Download Layer Refactor Plan Added
+
+Status: Done
+
+Summary:
+
+- added a formal architecture plan for cleaning the Chrome plugin download layer
+- fixed the intended target model as shared executors plus media-type and domain-specific download rules
+- documented that download refactor should mirror the already cleaner extraction-side media boundary
+
+Links:
+
+- `doc/architecture/DOWNLOAD_LAYER_REFACTOR_PLAN.md`
+- `doc/architecture/ARCHITECTURE_OVERVIEW.md`
+
+### 2026-06-08 Download Layer Status Documented
+
+Status: Done
+
+Summary:
+
+- recorded that the June 5 media-boundary refactor is still mostly intact
+- documented that the main remaining structural debt now sits in the download layer rather than the top-level media model
+- added an explicit architecture note so future work does not treat download hotfixes as final structure
+
+Links:
+
+- `doc/architecture/DOWNLOAD_LAYER_STATUS.md`
+- `doc/architecture/ARCHITECTURE_OVERVIEW.md`
+
+### 2026-06-08 Video Download MVP Task Created
+
+Status: Planned
+
+Summary:
+
+- created the formal MVP task for minimal local video-file download support
+- fixed the first download architecture target as single-file video only with `direct` and `page-context-fetch`
+- explicitly excluded segmented-stream, muxing, and WASM scope from this first implementation phase
+
+Links:
+
+- `doc/ai/tasks/2026-06-08_03_video-download-mvp-architecture.md`
+
+### 2026-06-08 Eagle MP4 Reference Added
+
+Status: Done
+
+Summary:
+
+- inspected the locally installed `Eagle for Chrome` extension package with focus on MP4 handling
+- recorded that Eagle primarily uses browser-side retrieval plus localhost desktop-app ingestion instead of a heavy in-browser media pipeline
+- added an initial comparison showing that Eagle's approach is easier to reproduce if this project accepts a local helper dependency
+
+Links:
+
+- `doc/materials/references/2026-06-08_eagle-for-chrome-mp4-technical-reference.md`
+
+### 2026-06-08 Video DownloadHelper Reference Added
+
+Status: Done
+
+Summary:
+
+- inspected the locally installed `Video DownloadHelper` Chrome extension package
+- recorded the implementation paths and observed strategy families under `doc/materials/references`
+- captured the main architectural conclusion that its stable downloading depends on a worker-based media pipeline, not only simple direct downloads
+
+Links:
+
+- `doc/materials/references/2026-06-08_video-downloadhelper-technical-reference.md`
+
+### 2026-06-08 Xinpianchang Video Rule Reopened
+
+Status: Reopened
+
+Summary:
+
+- validation showed the current `xinpianchang` video rollout is not actually complete
+- real download can still save `001.htm` / webpage content instead of the target media file
+- the second fix pass separated `xinpianchang` from the shared Weibo download rule and moved it to a dedicated direct-download rule entry
+- current validated sample still needs end-to-end confirmation against the actual extracted media host, which is `us-xpc5-l.xpccdn.com` on the tested page
+
+Links:
+
+- `doc/ai/tasks/2026-06-08_02_xinpianchang-video-domain-rule.md`
+- `doc/engineering/KNOWN_ISSUES.md`
+
+### 2026-06-08 Xinpianchang Video Domain Rule Completed
+
+Status: Done
+
+Summary:
+
+- added a Xinpianchang video special-domain rule that prefers direct MP4 candidates from HTML5 video elements, sources, and page hints
+- added Xinpianchang-specific fetch-based download handling so direct downloads keep the expected `xinpianchang.com` referer/origin behavior for `xpccdn.com`
+- updated the task file and engineering issue log to reflect the completed rollout phase
+
+Links:
+
+- `doc/ai/tasks/2026-06-08_02_xinpianchang-video-domain-rule.md`
+- `chrome-plugin/content.js`
+- `chrome-plugin/background.js`
+- `doc/engineering/KNOWN_ISSUES.md`
+
+### 2026-06-08 Weibo Video Domain Rule Completed
+
+Status: Done
+
+Summary:
+
+- added a Weibo video special-domain rule that prefers direct MP4 candidates from page payloads and direct video elements before falling back to the generic video extractor
+- added Weibo-specific download handling so direct downloads keep the expected `weibo.com` referer/origin behavior for `weibocdn.com` and related media hosts
+- recorded the Weibo rollout as complete in the task file and added a Weibo durability note to the engineering issues log
+
+Links:
+
+- `doc/ai/tasks/2026-06-08_01_weibo-video-domain-rule.md`
+- `chrome-plugin/content.js`
+- `chrome-plugin/background.js`
+- `doc/engineering/KNOWN_ISSUES.md`
+
+### 2026-06-08 Ordered Video Domain Tasks Created
+
+Status: Planned
+
+Summary:
+
+- created a sequenced rollout task for domain-specific video rules
+- split the next implementation phase into `weibo` first and `xinpianchang` second
+- explicitly told the coder agent to finish one domain before starting the next
+
+Links:
+
+- `doc/ai/tasks/2026-06-08_00_video-domain-rule-rollout-order.md`
+- `doc/ai/tasks/2026-06-08_01_weibo-video-domain-rule.md`
+- `doc/ai/tasks/2026-06-08_02_xinpianchang-video-domain-rule.md`
+
 ### 2026-06-08 Popup Toolbar Range Control Polish Completed
 
 Status: Done

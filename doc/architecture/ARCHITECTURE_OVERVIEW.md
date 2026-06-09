@@ -55,6 +55,93 @@ Planned future type:
 
 - audio
 
+## Current Rule Breakdown
+
+The current Chrome plugin should be read with this rule breakdown:
+
+```text
+content.js
+- image extraction
+  - generic image extraction
+  - image domain rules
+    - instagram
+    - behance
+    - xiaohongshu
+    - weibo
+    - weixin
+- video extraction
+  - generic video extraction
+  - video domain rules
+    - xiaohongshu
+    - weibo
+    - xinpianchang
+
+background.js
+- shared download queue shell
+- generic download executors
+  - direct
+  - fetchBlob
+- image download rules
+  - sinaimg
+  - xiaohongshu cdn
+- video download rules
+  - weibo
+  - xinpianchang
+```
+
+This means the image extraction side already has explicit platform-aware handling for `instagram`, `behance`, `xiaohongshu`, `weibo`, and `weixin` at the same structural level.
+
+It also means the current explicit download-domain layer is narrower than the image extraction layer:
+
+- some domains have image extraction rules but still use generic download
+- some domains have explicit download rules only when the generic path proved insufficient
+
+## Download Layer Status
+
+The extraction-side media boundary work is structurally ahead of the download side.
+
+Current project state should be read as:
+
+- extraction paths are closer to the intended media/domain separation
+- download paths are still transitional, but the shared executor now routes through explicit image/video download rule entry points instead of acting as the main host switchboard
+
+See:
+
+- [DOWNLOAD_LAYER_STATUS.md](D:/00_Projects_WSY/AI/Codex_Projects/MediaDownloader/doc/architecture/DOWNLOAD_LAYER_STATUS.md)
+- [DOWNLOAD_LAYER_REFACTOR_PLAN.md](D:/00_Projects_WSY/AI/Codex_Projects/MediaDownloader/doc/architecture/DOWNLOAD_LAYER_REFACTOR_PLAN.md)
+
+## Download Rule Classification Principle
+
+Domain extraction rules and domain download rules are related, but they are not required to exist as a pair.
+
+The classification rule is:
+
+- a domain may need a special extraction rule but still use generic download
+- a domain may use generic extraction but still need a special download rule
+- a domain should only gain a special download rule when its download behavior needs to be isolated from the generic path for correctness or long-term stability
+
+This means special download rules are not added for symmetry alone.
+
+They exist when a domain has durable download-specific needs such as:
+
+- request header requirements
+- referer or origin protection
+- domain-specific blob or direct strategy choice
+- host-specific download delivery quirks
+
+If a domain already downloads reliably through the generic path, it should stay generic until a real failure or repeated fragility proves that isolation is necessary.
+
+This principle protects the project from two opposite mistakes:
+
+1. over-creating domain download rules for sites that do not need them
+2. leaving fragile domains on the generic path so later generic changes accidentally break previously stable downloads
+
+Current explicit download-rule interpretation:
+
+- `sinaimg` and `xiaohongshu cdn` are explicit image download-rule cases
+- `weibo` and `xinpianchang` are explicit video download-rule cases
+- `instagram`, `behance`, and `weixin` currently remain on the generic download path unless a real download failure proves they need isolation
+
 ## Xiaohongshu Image Rule Note
 
 The current Xiaohongshu image special-domain strategy should prefer the note's isolated main media container before using broader heuristics.
@@ -81,6 +168,60 @@ Preferred order for Xiaohongshu video extraction:
 Current observed samples suggest that `stream_type 108` is often the maximum-size variant, but code should not hardcode `108` as the winner. The rule should rank all available stream variants instead.
 
 Observed Xiaohongshu samples also expose a structured video cover file id at `note.video.image.thumbnailFileid`. The Xiaohongshu video rule now uses the verified direct mapping `https://ci.xiaohongshu.com/<fileId>` for that field before falling back to generic poster guessing, and the helper stays scoped to the Xiaohongshu video special-domain path.
+
+## Weibo Video Rule Note
+
+The current Weibo video special-domain strategy should prefer page-embedded direct MP4 candidates over the generic video extractor when that structured or direct media data is present.
+
+Preferred order for Weibo video extraction:
+
+1. parse page-embedded `page_info`, `media_info`, or `mix_media_info` payloads when present
+2. if a Weibo player quality menu is present, inspect available quality entries and prefer the highest available option before trusting the current `video.src`
+3. collect direct single-file MP4 candidates from payloads, quality-switch results, video elements, and media meta hints
+4. choose the best direct candidate by resolution and URL quality hints
+5. fall back to the generic video extractor only if no direct Weibo video candidate is usable
+
+Important implementation note:
+
+- the static DOM can expose only the currently playing quality even when the Weibo player menu already contains higher qualities such as `4K`, `2K`, `1080p`, `720p`, and `480p`
+- this means a stable max-quality rule cannot rely only on the first visible `video.src`
+- it must prefer the player quality menu when available
+
+The Weibo download path still applies host-specific request headers for `weibocdn.com` and related direct media hosts, but current download execution should be read as a hybrid domain-specific path:
+
+1. fetch the protected media bytes in page context when necessary
+2. return a `blob:` URL to the extension side
+3. let the extension download layer perform the final save so folder routing and filename control remain intact
+
+## Xinpianchang Video Rule Note
+
+The current Xinpianchang video special-domain strategy should prefer the page's direct MP4 candidate and treat download execution as a dedicated media-request problem instead of a normal direct-download or fetch problem.
+
+Preferred order for Xinpianchang video extraction:
+
+1. scan direct HTML5 video elements, sources, and direct MP4 hints on the page
+2. collect direct single-file MP4 candidates and rank the largest usable one first
+3. keep the selected item on a dedicated Xinpianchang video download-rule path
+4. fall back to the generic video extractor only if no direct Xinpianchang candidate is usable
+
+Current validated failure evidence for Xinpianchang download work:
+
+- extraction can correctly identify the maximum-size direct MP4 candidate on the page
+- shared direct download can degrade into saved webpage content such as `001.htm`
+- background or offscreen `fetch(...)` against the protected `xpccdn` media host can return `403`
+- inline page-context script injection can be blocked by site CSP
+- main-world page `fetch(...)` can still fail with `Failed to fetch`
+- direct navigation to the extracted media URL can still return `403 Forbidden`
+- a real playback probe on the tested page shows the browser successfully uses the same extracted MP4 URL through `type: media` requests with `206 Partial Content`
+- the successful playback requests expose `Accept-Ranges: bytes` and `Content-Range: bytes .../...`, which means the browser is using a range-based media delivery path instead of a simple file download path
+
+Current architectural conclusion:
+
+- the unsolved part is not extraction
+- the blocker is the host-protected download execution path
+- future Xinpianchang work should stop treating the host as a normal `direct` or `fetch` download target
+- the current MVP implementation pass now tries a browser-native media-capture executor for `xinpianchang` instead of another small variation of shared `direct` or shared `fetchBlob`
+- that executor is still pending real validation and currently records a playable `webm` output rather than preserving the original MP4 bytes directly
 
 ## Data Flow
 
