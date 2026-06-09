@@ -1,5 +1,5 @@
 (() => {
-const CONTENT_BUILD_HASH = "1156";
+const CONTENT_BUILD_HASH = "1157";
 const PLUGIN_VERSION = "0.2.1";
   const XIAOHONGSHU_DISPLAY_NAME = "\u5c0f\u7ea2\u4e66";
   const XIAOHONGSHU_SUFFIX_PATTERN = /\s*[|\-]\s*(?:\u5c0f\u7ea2\u4e66|Xiaohongshu)\b.*$/i;

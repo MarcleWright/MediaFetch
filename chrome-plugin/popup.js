@@ -29,9 +29,10 @@ const clipboardBoxEl = document.getElementById("clipboardBox");
 const convertHeicToPngInput = document.getElementById("settingConvertHeicToPng");
 const settingLinkDownloadInput = document.getElementById("settingLinkDownload");
 const PLUGIN_VERSION = "0.2.1";
+const BUILD_HASH = "1157";
 
 function getResponseContentBuildHash(debug = {}) {
-  return String(debug?.client?.contentBuildHash || debug?.contentBuildHash || "unknown");
+  return String(debug?.buildHash || debug?.client?.contentBuildHash || debug?.contentBuildHash || BUILD_HASH);
 }
 const settingLineageInput = document.getElementById("settingLineage");
 const settingEagleInput = document.getElementById("settingEagle");
@@ -2846,7 +2847,19 @@ function renderDebugInfo(debug) {
     return;
   }
 
-  debugInfoEl.textContent = JSON.stringify(debug, null, 2);
+  const buildHash = getResponseContentBuildHash(debug);
+  const normalizedDebug = {
+    buildHash,
+    ...debug,
+  };
+  if (normalizedDebug.client && typeof normalizedDebug.client === "object") {
+    normalizedDebug.client = {
+      ...normalizedDebug.client,
+      contentBuildHash: buildHash,
+    };
+  }
+
+  debugInfoEl.textContent = JSON.stringify(normalizedDebug, null, 2);
 }
 
 async function copyDebugInfo() {

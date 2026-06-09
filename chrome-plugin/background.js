@@ -19,6 +19,7 @@ const DOWNLOAD_STRATEGY_XIAOHONGSHU_IMAGE_FETCH_BLOB = "xiaohongshuImageFetchBlo
 const DOWNLOAD_STRATEGY_XIAOHONGSHU_VIDEO_FETCH_BLOB = "xiaohongshuVideoFetchBlob";
 const DOWNLOAD_STRATEGY_WEIBO_VIDEO_DIRECT = "weiboVideoDirect";
 const DOWNLOAD_STRATEGY_MEDIA_CAPTURE = "mediaCapture";
+const BUILD_HASH = "1157";
 const HEIC_CONVERTER_OFFSCREEN_URL = "offscreen.html";
 const OFFSCREEN_DOCUMENT_REASON = "BLOBS";
 const NETWORK_PROBE_ENTRY_LIMIT = 24;
@@ -778,7 +779,7 @@ async function extractInstagramInBackground({ sourceUrl, sourceTabIndex = null, 
     response.debug.client = {
       ...(response.debug.client || {}),
       version: "0.2.1",
-      contentBuildHash: "1154",
+      contentBuildHash: BUILD_HASH,
       probeError,
       instagramSamplingError,
       weiboSamplingError,
@@ -1162,8 +1163,8 @@ async function downloadXiaohongshuVideoWithFetchBlobStrategy(item, filename, con
   return await downloadMediaWithFetchBlobStrategy(item, filename, context);
 }
 
-async function downloadWeiboVideoWithDirectStrategy(item, filename, _context = {}) {
-  const pageUrl = normalizeHttpUrl(_context.pageUrl || _context.referer || "");
+async function downloadWeiboVideoWithDirectStrategy(item, filename, context = {}) {
+  const pageUrl = normalizeHttpUrl(context.pageUrl || context.referer || "");
   if (!pageUrl) {
     throw new Error("Weibo direct video download requires a page URL.");
   }
@@ -1186,17 +1187,10 @@ async function downloadWeiboVideoWithDirectStrategy(item, filename, _context = {
     target: { tabId: tab.id },
     world: "MAIN",
     func: async (urls, downloadName) => {
-      const triggerBlobDownload = (blob, suggestedName) => {
+      const createBlobUrl = (blob) => {
         const objectUrl = URL.createObjectURL(blob);
-        const anchor = document.createElement("a");
-        anchor.href = objectUrl;
-        anchor.download = String(suggestedName || "video.mp4");
-        anchor.rel = "noopener";
-        anchor.style.display = "none";
-        (document.documentElement || document.body || document.head).appendChild(anchor);
-        anchor.click();
-        anchor.remove();
-        window.setTimeout(() => URL.revokeObjectURL(objectUrl), 60000);
+        window.setTimeout(() => URL.revokeObjectURL(objectUrl), 10 * 60 * 1000);
+        return objectUrl;
       };
 
       const fetchBlobViaXhr = (resourceUrl) => new Promise((resolve, reject) => {
@@ -1259,12 +1253,13 @@ async function downloadWeiboVideoWithDirectStrategy(item, filename, _context = {
             continue;
           }
 
-          triggerBlobDownload(blob, downloadName);
+          const blobUrl = createBlobUrl(blob);
           return {
             ok: true,
             initiated: true,
             mode,
             size: Number(blob.size || 0),
+            blobUrl,
             selectedUrl: String(resourceUrl || ""),
             failureCount: failures.length,
           };
@@ -1290,7 +1285,17 @@ async function downloadWeiboVideoWithDirectStrategy(item, filename, _context = {
     throw new Error(response?.error || "Weibo page-anchor download failed.");
   }
 
-  return null;
+  const blobUrl = String(response.blobUrl || "");
+  if (!blobUrl) {
+    throw new Error("Weibo page download did not return a blob URL.");
+  }
+
+  return await downloadToChrome({
+    url: blobUrl,
+    filename: context.folder ? `${context.folder}/${filename}` : filename,
+    saveAs: false,
+    conflictAction: "uniquify",
+  });
 }
 
 function getDownloadFilePrefix(metadata) {
