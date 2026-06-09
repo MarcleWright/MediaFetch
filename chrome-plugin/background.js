@@ -22,7 +22,7 @@ const IMAGE_DOWNLOAD_STRATEGY_RULES = [
 ];
 const VIDEO_DOWNLOAD_STRATEGY_RULES = [
   { strategy: DOWNLOAD_STRATEGY_DIRECT, test: isXinpianchangVideoUrl },
-  { strategy: DOWNLOAD_STRATEGY_DIRECT, test: isWeiboVideoUrl },
+  { strategy: DOWNLOAD_STRATEGY_FETCH_BLOB, test: isWeiboVideoUrl },
 ];
 const IMAGE_DOWNLOAD_HEADER_RULE_BUILDERS = [
   { id: SINAIMG_DOWNLOAD_RULE_ID, test: isSinaimgUrl, build: buildSinaimgDownloadHeaderRule },
@@ -739,6 +739,9 @@ async function executeDownloadStrategy(item, filename, context = {}) {
     try {
       return await downloadFetchedBlob(item.url, filename);
     } catch (error) {
+      if (!shouldAllowDirectFallback(item, context)) {
+        throw error;
+      }
       console.warn("MediaFetch fetch-blob download failed; falling back to direct download.", error);
       return await downloadDirectMedia(item.url, filename);
     }
@@ -881,6 +884,9 @@ async function downloadFetchedBlob(url, filename) {
   if (!bytes.length) {
     throw new Error("Media response was empty.");
   }
+  if (isFetchedHtmlPayload(bytes, contentType)) {
+    throw new Error("Media request returned HTML instead of a file.");
+  }
 
   const mimeType = contentType.startsWith("image/") || contentType.startsWith("video/")
     ? contentType
@@ -902,6 +908,28 @@ function isFetchedMediaContentTypeAllowed(contentType) {
     contentType === "application/octet-stream" ||
     contentType === "binary/octet-stream"
   );
+}
+
+function isFetchedHtmlPayload(bytes, contentType) {
+  if (contentType.includes("text/html")) {
+    return true;
+  }
+  if (!bytes?.length) {
+    return false;
+  }
+  const sample = new TextDecoder("utf-8", { fatal: false }).decode(bytes.slice(0, 512)).trim().toLowerCase();
+  return sample.startsWith("<!doctype html") || sample.startsWith("<html") || sample.includes("<body");
+}
+
+function shouldAllowDirectFallback(item, _context = {}) {
+  if (item?.download?.allowDirectFallback === false) {
+    return false;
+  }
+  const url = String(item?.url || "");
+  if (isWeiboVideoUrl(url) || isXinpianchangVideoUrl(url)) {
+    return false;
+  }
+  return true;
 }
 
 function inferMimeTypeFromFilename(filename) {

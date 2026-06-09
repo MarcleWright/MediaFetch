@@ -33,6 +33,90 @@ The repository currently contains two delivery paths:
 7. use a compact popup toolbar with icon-only settings/refresh actions and a segmented extraction-range control for images, videos, or both
 8. keep host-specific video downloads on direct single-file URLs when a domain rule has verified that path, including host-protected cases that need a domain-specific direct-download rule plus request headers
 
+## Current Chrome Plugin Structure
+
+This is a product-facing summary of the current Chrome plugin structure.
+
+```text
+chrome-plugin
+├─ extraction
+│  ├─ shared facts
+│  ├─ image path
+│  │  ├─ generic image fallback
+│  │  └─ platform-aware image extraction
+│  │     ├─ instagram
+│  │     ├─ behance
+│  │     ├─ xiaohongshu
+│  │     ├─ weibo
+│  │     └─ weixin
+│  └─ video path
+│     ├─ generic video fallback
+│     └─ video domain rules
+│        ├─ xiaohongshu
+│        ├─ weibo
+│        └─ xinpianchang
+├─ popup
+│  ├─ images
+│  ├─ videos
+│  └─ merged media view
+└─ download
+   ├─ shared queue and file save shell
+   ├─ generic executors
+   │  ├─ direct
+   │  └─ fetchBlob
+   ├─ image download rules
+   │  ├─ sinaimg
+   │  └─ xiaohongshu cdn
+   ├─ video download rules
+   │  ├─ weibo
+   │  └─ xinpianchang
+   └─ generic download path for domains that do not need isolation
+```
+
+## Image Platform Rule Note
+
+Image extraction already contains meaningful platform-aware handling for:
+
+- `instagram`
+- `behance`
+- `xiaohongshu`
+- `weibo`
+- `weixin`
+
+These were not omitted because they do not exist.
+
+They were omitted from some recent shorthand breakdowns because the current image side is structured differently from the newer video side:
+
+- image extraction has a broader platform-aware domain path grouped under `extractDomainImages(...)`
+- video extraction is currently documented more explicitly as one domain rule per site because that layer was added later and is still being formalized
+
+So the correct interpretation is:
+
+- `behance`, `weibo`, `instagram`, and `weixin` absolutely do have image-domain handling in the project
+- they are just not all written as separate architecture note sections yet
+- `xiaohongshu` image got called out separately because it recently needed extra rule clarification around main-container priority and over-selection risk
+
+In other words, the image side is not "missing" those domains.
+
+It is an older, broader platform-aware rule layer that already absorbed significant site-specific work before the newer media-boundary refactor made the video side more explicitly rule-by-rule.
+
+## Download Rule Note
+
+Download rules should be read differently from image extraction rules.
+
+Current explicit download-domain handling is:
+
+- image download rules:
+  - `sinaimg`
+  - `xiaohongshu cdn`
+- video download rules:
+  - `weibo`
+  - `xinpianchang`
+
+This does not mean other domains are unsupported.
+
+It means the other domains currently stay on the generic download path until a real failure or repeated fragility proves they need isolation.
+
 ## Non-goals
 
 - full streaming downloader support in the current Chrome plugin phase

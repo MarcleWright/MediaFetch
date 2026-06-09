@@ -1,5 +1,22 @@
 # Dev Log
 
+### 2026-06-09 Weibo And Xinpianchang Video Download Fix Pass Started
+
+Status: In Progress
+
+Summary:
+
+- changed `weibo` and `xinpianchang` video downloads to prefer `fetchBlob` instead of direct browser download
+- disabled silent direct fallback for those two video domains so failed protected requests no longer degrade into saved webpage content
+- added HTML-payload rejection before saving fetched media so `001.htm`-style false-success results are blocked at the download executor layer
+- left final task completion pending real browser-page validation
+
+Links:
+
+- `doc/ai/tasks/2026-06-08_01_weibo-video-domain-rule.md`
+- `doc/ai/tasks/2026-06-08_02_xinpianchang-video-domain-rule.md`
+- `doc/engineering/KNOWN_ISSUES.md`
+
 ### 2026-06-08 Branch Snapshot Prepared Before Video Download Fix Pass
 
 Status: Done

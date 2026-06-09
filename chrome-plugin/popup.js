@@ -463,6 +463,7 @@ function normalizeMediaItem(item, index = 0) {
     area: Number(item?.area || 0),
     download: {
       strategy: downloadStrategy === "fetchBlob" ? "fetchBlob" : "direct",
+      allowDirectFallback: item?.download?.allowDirectFallback !== false,
     },
   };
 }
@@ -491,7 +492,7 @@ function normalizeExtractionMedia(response) {
     media.push(normalizeMediaItem({
       ...item,
       mediaType: "video",
-      download: item?.download || { strategy: "direct" },
+      download: item?.download || { strategy: "fetchBlob" },
     }, rawImages.length + index));
   });
   return media;

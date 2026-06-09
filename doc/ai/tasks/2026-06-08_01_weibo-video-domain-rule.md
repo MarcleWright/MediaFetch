@@ -120,5 +120,7 @@ Expected documentation updates after implementation:
 Reopened for the next iteration.
 
 - the current branch keeps the explicit Weibo video extraction and download rule entries
+- this pass changes the Weibo video download path to `fetchBlob`-first and disables silent direct-download fallback for the domain so failed downloads no longer degrade into saved webpage content
+- the background fetch path now rejects HTML payloads before saving, which should block `001.htm`-style false-success results if the host returns a page instead of media
 - static checks and rule-structure validation were completed
-- end-to-end local video download is not currently accepted as complete for this branch snapshot and must be revalidated in the next video-download pass
+- end-to-end local video download still needs real browser-page validation before the task can be marked complete

@@ -2384,6 +2384,7 @@ const PLUGIN_VERSION = "0.2.1";
       area: Number(candidate.width || 0) * Number(candidate.height || 0),
       download: {
         strategy: "direct",
+        allowDirectFallback: false,
       },
     };
   }
@@ -2631,7 +2632,8 @@ const PLUGIN_VERSION = "0.2.1";
       score: candidate.score,
       area: Number(candidate.width || 0) * Number(candidate.height || 0),
       download: {
-        strategy: "direct",
+        strategy: selectVideoDownloadStrategy(candidate.url),
+        allowDirectFallback: false,
       },
     };
   }

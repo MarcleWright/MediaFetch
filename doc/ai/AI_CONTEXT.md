@@ -5,7 +5,7 @@
 1. maintain image/video boundary discipline in the Chrome plugin
 2. keep the restored Xiaohongshu image download path stable after the download-layer cleanup
 3. package the current architecture and documentation cleanup as a stable branch snapshot before the next video-download pass
-4. defer `weibo` and `xinpianchang` video download fixes to the next iteration
+4. finish the reopened `weibo` and `xinpianchang` end-to-end video download fixes and revalidate them on real pages
 5. keep the download-layer boundary cleanup aligned with the explicit image/video rule entry model now in `chrome-plugin/background.js`
 6. keep `doc/` as the durable documentation root for ongoing work
 7. preserve the current domain-rule rollout decisions as stable project memory
@@ -39,7 +39,7 @@
 - the target fix direction for that debt is documented in `doc/architecture/DOWNLOAD_LAYER_REFACTOR_PLAN.md`
 - the next download-layer implementation focus is image-domain download migration, with Xiaohongshu image first and Sinaimg / Weibo image second
 - `behance` currently stays on the generic image path unless a real failure proves otherwise
-- current branch packaging intentionally stops before solving the reopened `weibo` and `xinpianchang` video download failures
+- current video download fix direction is `fetchBlob`-first with HTML-payload rejection and no silent direct fallback for `weibo` and `xinpianchang`
 - current Xiaohongshu image direction is main-container first, structured `imageList` second, visual clustering last
 - current Xiaohongshu video direction is `mediaV2/stream` first, rank all variants, choose maximum size, then fall back to generic scanning
 - current Xiaohongshu video cover direction is the verified direct `https://ci.xiaohongshu.com/<fileId>` mapping from `note.video.image.thumbnailFileid`, then existing poster fallbacks

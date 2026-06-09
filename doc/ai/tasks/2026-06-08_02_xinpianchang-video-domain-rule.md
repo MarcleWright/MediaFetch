@@ -121,6 +121,8 @@ Attempted twice, and still reopened after validation failure.
 
 The current implementation is not yet accepted because real downloads can still save `001.htm` / webpage content instead of the media file.
 
-The current code now has a dedicated `xinpianchang` extract rule and a dedicated `xinpianchang` download-rule entry, and it prefers direct download strategy instead of the previous fetch-based path.
+The current code now has a dedicated `xinpianchang` extract rule and a dedicated `xinpianchang` download-rule entry.
+
+The latest pass changes the Xinpianchang video download path back to `fetchBlob`-first, rejects HTML payloads before saving, and disables silent direct-download fallback for this domain so failed host-protected requests no longer degrade into saved webpage content.
 
 The next pass must re-verify the full end-to-end download path against the actual extracted media host from the page-attached video URL. The current validated sample resolves to `us-xpc5-l.xpccdn.com`.
