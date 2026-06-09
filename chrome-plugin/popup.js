@@ -431,6 +431,10 @@ function getVisibleVideos() {
   return Array.isArray(state.videos) ? state.videos : [];
 }
 
+function getVisibleOriginalMediaItems() {
+  return getVisibleMediaItems().filter((item) => item?.mediaType === "video" || item?.isOriginal);
+}
+
 function getSelectedMediaItems() {
   return getAllMediaItems().filter((item) => item.selected);
 }
@@ -1481,24 +1485,24 @@ async function downloadSelected() {
 }
 
 async function saveSelectedToLineage() {
-  const selected = getVisibleImages().filter((item) => item.selected);
-  await saveImagesToLineage(selected);
+  const selected = getVisibleMediaItems().filter((item) => item.selected);
+  await saveMediaToLineage(selected);
 }
 
 async function saveOriginalToLineage() {
-  const originals = getVisibleImages().filter((item) => item.isOriginal);
+  const originals = getVisibleOriginalMediaItems();
   state.images.forEach((item) => {
     item.selected = !!item.isOriginal;
   });
   state.videos.forEach((item) => {
-    item.selected = false;
+    item.selected = getExtractionRangeSetting() !== "images";
   });
   syncMergedMediaState();
   render();
-  await saveImagesToLineage(originals);
+  await saveMediaToLineage(originals);
 }
 
-async function saveImagesToLineage(selected) {
+async function saveMediaToLineage(selected) {
   if (!selected.length) return;
 
   const folder = sanitizeFolderName(folderNameInput.value.trim() || state.projectName || "ProjectsA");
@@ -1535,8 +1539,8 @@ async function saveImagesToLineage(selected) {
     const queuedAhead = Number(result?.queuedAhead || 0);
     setLineageStatus(
       result?.active || queuedAhead > 0
-        ? `Queued ${selected.length} image(s) for Lineage. ${queuedAhead} task(s) ahead.`
-        : `Lineage import started for ${selected.length} image(s).`,
+        ? `Queued ${selected.length} item(s) for Lineage. ${queuedAhead} task(s) ahead.`
+        : `Lineage import started for ${selected.length} item(s).`,
       false
     );
   } catch (error) {
@@ -2739,6 +2743,7 @@ function render() {
   const imageCount = visibleItems.filter((item) => item.mediaType !== "video").length;
   const videoCount = visibleItems.filter((item) => item.mediaType === "video").length;
   const originalCount = visibleItems.filter((item) => item.mediaType !== "video" && item.isOriginal).length;
+  const lineageOriginalCount = visibleItems.filter((item) => item.mediaType === "video" || item.isOriginal).length;
   selectionStatus.textContent = `Selected: ${selectedCount} / ${visibleItems.length} | Images: ${imageCount} | Videos: ${videoCount} | Original: ${originalCount}`;
 
   selectAllBtn.disabled = visibleItems.length === 0;
@@ -2749,7 +2754,7 @@ function render() {
     lineageSaveSelectedBtn.disabled = selectedCount === 0 || !lineageFeatureEnabled;
   }
   if (lineageSaveOriginalBtn) {
-    lineageSaveOriginalBtn.disabled = originalCount === 0 || !lineageFeatureEnabled;
+    lineageSaveOriginalBtn.disabled = lineageOriginalCount === 0 || !lineageFeatureEnabled;
   }
   if (eagleSaveSelectedBtn) {
     eagleSaveSelectedBtn.disabled = selectedCount === 0 || !eagleFeatureEnabled;
@@ -2763,11 +2768,16 @@ function render() {
     card.className = "card";
     if (item.selected) card.classList.add("selected");
 
-    if (item.mediaType !== "video" && item.isOriginal) {
+    const badges = document.createElement("div");
+    badges.className = "badgeRow";
+    let hasBadge = false;
+
+    if (item.mediaType === "video" || item.isOriginal) {
       const badge = document.createElement("span");
       badge.className = "badge";
       badge.textContent = "Original";
-      card.appendChild(badge);
+      badges.appendChild(badge);
+      hasBadge = true;
     }
 
     const thumb = document.createElement("div");
@@ -2779,15 +2789,19 @@ function render() {
       poster.alt = `video ${index + 1}`;
       thumb.appendChild(poster);
       const videoBadge = document.createElement("span");
-      videoBadge.className = "badge";
-      videoBadge.textContent = "Video";
-      card.appendChild(videoBadge);
+      videoBadge.className = "badge badgeVideo";
+      videoBadge.textContent = "video";
+      badges.appendChild(videoBadge);
+      hasBadge = true;
     } else {
       const img = document.createElement("img");
       img.loading = "lazy";
       img.src = item.thumbnail || item.url;
       img.alt = `image ${index + 1}`;
       thumb.appendChild(img);
+    }
+    if (hasBadge) {
+      card.appendChild(badges);
     }
     card.appendChild(thumb);
 

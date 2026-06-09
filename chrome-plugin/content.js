@@ -2108,7 +2108,12 @@ const PLUGIN_VERSION = "0.2.1";
 
     const ranked = rankWeiboVideoCandidates(candidates);
     const selectedCandidate = ranked[0] || null;
-    const selectedMedia = selectedCandidate ? buildWeiboVideoMediaItem(selectedCandidate) : null;
+    const fallbackCandidates = selectedCandidate
+      ? ranked.filter((candidate) => candidate.url !== selectedCandidate.url)
+      : [];
+    const selectedMedia = selectedCandidate
+      ? buildWeiboVideoMediaItem(selectedCandidate, fallbackCandidates)
+      : null;
 
     return {
       media: selectedMedia ? [selectedMedia] : [],
@@ -2656,9 +2661,12 @@ const PLUGIN_VERSION = "0.2.1";
     });
   }
 
-  function buildWeiboVideoMediaItem(candidate) {
+  function buildWeiboVideoMediaItem(candidate, fallbackCandidates = []) {
     const posterUrl = normalizeUrl(candidate.posterUrl || candidate.previewUrl || "");
     const previewUrl = normalizeUrl(candidate.previewUrl || candidate.posterUrl || candidate.url || "");
+    const fallbackUrls = Array.isArray(fallbackCandidates)
+      ? fallbackCandidates.map((item) => normalizeUrl(item?.url || "")).filter(Boolean)
+      : [];
     return {
       id: "video:1",
       mediaType: "video",
@@ -2680,6 +2688,7 @@ const PLUGIN_VERSION = "0.2.1";
       download: {
         strategy: "weiboVideoDirect",
         allowDirectFallback: false,
+        fallbackUrls,
       },
     };
   }

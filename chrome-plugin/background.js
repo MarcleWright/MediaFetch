@@ -901,12 +901,15 @@ async function downloadMediaBatch(mediaItems, options) {
     const item = mediaItems[i];
     const extension = inferOutputExtension(item, options);
     const fileName = buildIndexedFileName(filePrefix, i, extension);
-    const downloadId = await executeDownloadStrategy(item, fileName, {
+    const strategyContext = {
       folder,
       referer,
       pageUrl: options.pageUrl || "",
       convertHeicToPng: !!options.convertHeicToPng,
-    });
+    };
+    const downloadId = options.lineageOnly
+      ? await executeDownloadStrategyForLineage(item, fileName, strategyContext)
+      : await executeDownloadStrategy(item, fileName, strategyContext);
     if (downloadId) {
       downloadRecords.push({
         id: downloadId,
@@ -1005,6 +1008,105 @@ async function executeDownloadStrategy(item, filename, context = {}) {
   return await executor(item, filename, context);
 }
 
+async function executeDownloadStrategyForLineage(item, filename, context = {}) {
+  const observedDownload = observeNextDownload(filename);
+  try {
+    const downloadId = await executeDownloadStrategy(item, filename, context);
+    if (downloadId) {
+      observedDownload.cancel();
+      return downloadId;
+    }
+    return await observedDownload.wait();
+  } catch (error) {
+    observedDownload.cancel();
+    throw error;
+  }
+}
+
+function observeNextDownload(expectedFilename) {
+  let settled = false;
+  let resolvePromise;
+
+  const cleanup = () => {
+    chrome.downloads.onCreated.removeListener(onCreated);
+  };
+
+  const settle = (value) => {
+    if (settled) {
+      return;
+    }
+    settled = true;
+    cleanup();
+    resolvePromise(value);
+  };
+
+  const onCreated = (downloadItem) => {
+    if (!isObservedDownloadMatch(downloadItem, expectedFilename)) {
+      return;
+    }
+    settle(downloadItem.id);
+  };
+
+  const promise = new Promise((resolve) => {
+    resolvePromise = resolve;
+    chrome.downloads.onCreated.addListener(onCreated);
+  });
+
+  return {
+    async wait(timeoutMs = 30000) {
+      let timeoutId = null;
+      try {
+        return await Promise.race([
+          promise,
+          new Promise((_resolve, reject) => {
+            timeoutId = setTimeout(() => {
+              reject(new Error(`Timed out waiting for local download: ${expectedFilename}`));
+            }, timeoutMs);
+          }),
+        ]);
+      } finally {
+        if (timeoutId) {
+          clearTimeout(timeoutId);
+        }
+      }
+    },
+    cancel() {
+      if (!settled) {
+        settled = true;
+        cleanup();
+      }
+    },
+  };
+}
+
+function isObservedDownloadMatch(downloadItem, expectedFilename) {
+  const expected = getDownloadBaseName(expectedFilename);
+  const actual = getDownloadBaseName(downloadItem?.filename || "");
+  if (expected && actual) {
+    if (actual === expected) {
+      return true;
+    }
+    const dotIndex = expected.lastIndexOf(".");
+    const stem = dotIndex >= 0 ? expected.slice(0, dotIndex) : expected;
+    const extension = dotIndex >= 0 ? expected.slice(dotIndex) : "";
+    const escapedStem = escapeRegExp(stem);
+    const escapedExtension = escapeRegExp(extension);
+    if (new RegExp(`^${escapedStem} \\(\\d+\\)${escapedExtension}$`, "i").test(actual)) {
+      return true;
+    }
+  }
+
+  return /^blob:/i.test(String(downloadItem?.url || ""));
+}
+
+function getDownloadBaseName(value) {
+  return String(value || "").split(/[\\/]/).pop().trim();
+}
+
+function escapeRegExp(value) {
+  return String(value || "").replace(/[.*+?^${}()|[\]\\]/g, "\\$&");
+}
+
 async function downloadConvertedPng(url, filename) {
   const dataUrl = await fetchImageAsPngDataUrl(url);
   return await downloadToChrome({
@@ -1065,6 +1167,15 @@ async function downloadWeiboVideoWithDirectStrategy(item, filename, _context = {
   if (!pageUrl) {
     throw new Error("Weibo direct video download requires a page URL.");
   }
+  const attemptUrls = [
+    normalizeHttpUrl(item?.url || ""),
+    ...((Array.isArray(item?.download?.fallbackUrls) ? item.download.fallbackUrls : [])
+      .map((value) => normalizeHttpUrl(value))
+      .filter(Boolean)),
+  ].filter((value, index, array) => value && array.indexOf(value) === index);
+  if (!attemptUrls.length) {
+    throw new Error("Weibo direct video download requires at least one media URL.");
+  }
 
   const tab = await findTabByUrl(pageUrl);
   if (!tab?.id) {
@@ -1074,7 +1185,20 @@ async function downloadWeiboVideoWithDirectStrategy(item, filename, _context = {
   const results = await chrome.scripting.executeScript({
     target: { tabId: tab.id },
     world: "MAIN",
-    func: async (url) => {
+    func: async (urls, downloadName) => {
+      const triggerBlobDownload = (blob, suggestedName) => {
+        const objectUrl = URL.createObjectURL(blob);
+        const anchor = document.createElement("a");
+        anchor.href = objectUrl;
+        anchor.download = String(suggestedName || "video.mp4");
+        anchor.rel = "noopener";
+        anchor.style.display = "none";
+        (document.documentElement || document.body || document.head).appendChild(anchor);
+        anchor.click();
+        anchor.remove();
+        window.setTimeout(() => URL.revokeObjectURL(objectUrl), 60000);
+      };
+
       const fetchBlobViaXhr = (resourceUrl) => new Promise((resolve, reject) => {
         try {
           const xhr = new XMLHttpRequest();
@@ -1096,38 +1220,60 @@ async function downloadWeiboVideoWithDirectStrategy(item, filename, _context = {
       });
 
       try {
-        let blob = null;
-        let mode = "";
+        const failures = [];
+        for (const resourceUrl of Array.isArray(urls) ? urls : []) {
+          let blob = null;
+          let mode = "";
 
-        try {
-          const response = await fetch(String(url || ""), {
-            method: "GET",
-            credentials: "include",
-            cache: "no-store",
-          });
-          if (!response.ok) {
-            throw new Error(`Fetch failed: ${response.status}`);
+          try {
+            const response = await fetch(String(resourceUrl || ""), {
+              method: "GET",
+              credentials: "include",
+              cache: "no-store",
+            });
+            if (!response.ok) {
+              throw new Error(`Fetch failed: ${response.status}`);
+            }
+            blob = await response.blob();
+            mode = "page-fetch-blob-download";
+          } catch (fetchError) {
+            try {
+              blob = await fetchBlobViaXhr(String(resourceUrl || ""));
+              mode = "page-xhr-blob-download";
+            } catch (xhrError) {
+              failures.push({
+                url: String(resourceUrl || ""),
+                error: xhrError instanceof Error
+                  ? xhrError.message
+                  : (fetchError instanceof Error ? fetchError.message : String(fetchError || xhrError)),
+              });
+              continue;
+            }
           }
-          blob = await response.blob();
-          mode = "page-fetch-blob-download";
-        } catch (_fetchError) {
-          blob = await fetchBlobViaXhr(String(url || ""));
-          mode = "page-xhr-blob-download";
-        }
 
-        if (!blob || !blob.size) {
-          throw new Error("Weibo page blob download produced an empty file.");
-        }
+          if (!blob || !blob.size) {
+            failures.push({
+              url: String(resourceUrl || ""),
+              error: "Weibo page blob download produced an empty file.",
+            });
+            continue;
+          }
 
-        const objectUrl = URL.createObjectURL(blob);
-        window.__mediafetchBlobUrls = Array.isArray(window.__mediafetchBlobUrls) ? window.__mediafetchBlobUrls : [];
-        window.__mediafetchBlobUrls.push(objectUrl);
+          triggerBlobDownload(blob, downloadName);
+          return {
+            ok: true,
+            initiated: true,
+            mode,
+            size: Number(blob.size || 0),
+            selectedUrl: String(resourceUrl || ""),
+            failureCount: failures.length,
+          };
+        }
         return {
-          ok: true,
-          blobUrl: objectUrl,
-          mode,
-          size: Number(blob.size || 0),
-          contentType: String(blob.type || ""),
+          ok: false,
+          error: failures.length
+            ? failures.map((item) => `${item.url} -> ${item.error}`).join(" | ")
+            : "Weibo page blob fetch failed for every candidate.",
         };
       } catch (error) {
         return {
@@ -1136,43 +1282,15 @@ async function downloadWeiboVideoWithDirectStrategy(item, filename, _context = {
         };
       }
     },
-    args: [item.url],
+    args: [attemptUrls, filename],
   });
 
   const response = results?.[0]?.result || null;
   if (!response?.ok) {
-    throw new Error(response?.error || "Weibo page blob fetch failed.");
-  }
-  if (!response.blobUrl) {
-    throw new Error("Weibo page blob fetch did not return a blob URL.");
+    throw new Error(response?.error || "Weibo page-anchor download failed.");
   }
 
-  try {
-    return await downloadToChrome({
-      url: response.blobUrl,
-      filename,
-      saveAs: false,
-      conflictAction: "uniquify",
-    });
-  } finally {
-    try {
-      await chrome.scripting.executeScript({
-        target: { tabId: tab.id },
-        world: "MAIN",
-        func: (blobUrl) => {
-          try {
-            URL.revokeObjectURL(String(blobUrl || ""));
-            if (Array.isArray(window.__mediafetchBlobUrls)) {
-              window.__mediafetchBlobUrls = window.__mediafetchBlobUrls.filter((item) => item !== blobUrl);
-            }
-          } catch (_error) {
-          }
-        },
-        args: [response.blobUrl],
-      });
-    } catch (_cleanupError) {
-    }
-  }
+  return null;
 }
 
 function getDownloadFilePrefix(metadata) {
